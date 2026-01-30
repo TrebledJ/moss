@@ -1,0 +1,37 @@
+# Sample configuration file.
+# Use # for comment.
+
+bind = "0.0.0.0"
+port = 8000
+
+# [verbosity]
+#v = 1
+
+# [response]
+status_code = 404
+body = ""
+#server = "apache"
+header = []
+directory = ""
+base_path = "/static"
+
+# [display]
+#filter = ""
+#correlation_regex = ""
+#jsonl = ""
+output_all = true
+ignore_common_headers = true
+no_anomaly = false
+
+# [protocol]
+https = true
+#certfile = "cert.pem"
+#keyfile = "key.pem"
+websockets = true
+start80443 = false
+
+# [notifications]
+#notify = "discord"
+#notify_on = ["match", "anomaly"]
+#webhook = "https://your-webhook.com"
+#id = "local"
