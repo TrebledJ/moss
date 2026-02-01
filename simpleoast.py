@@ -1029,7 +1029,7 @@ def run():
     if args.filter: printe(f"{CLR_YLW}Filter active:{CLR_RST} {args.filter}")
     if args.correlation_regex: printe(f"{CLR_YLW}Correlation ID regex:{CLR_RST} {args.correlation_regex}")
     if args.jsonl: printe(f"{CLR_CYN}JSONL logging to:{CLR_RST} {args.jsonl}")
-    if args.jsonl: printe(f"{CLR_CYN}Notifications:{CLR_RST} {args.notify}")
+    if args.notify: printe(f"{CLR_CYN}Notifications:{CLR_RST} {args.notify}")
     printe()
 
     handler = LoggingEventHandler(
