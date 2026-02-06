@@ -15,6 +15,8 @@ import sys
 import socket
 import traceback
 import random
+import urllib3
+import json
 
 GROUP = "notifications (ext/notify.py)"
 
@@ -46,6 +48,8 @@ class NotificationEventHandler:
     identifier: str = _field(None, group=GROUP, flags=["--id"], doc="An identifier which will be sent along with the notification, primarily to help you identify this instance in case you have multiple running. An id will be automatically generated if not provided")
 
     def __post_init__(self):
+        if not self.notify_platform:
+            self.logger.warning(f"notify module was enabled but no platform settings were provided")
         if not self.notify_on:
             self.notify_on = ["all"]
         if self.identifier is None:
@@ -56,14 +60,7 @@ class NotificationEventHandler:
                 self.printerr("--webhook-url was not provided")
                 sys.exit(1)
 
-            try:
-                import requests
-            except ImportError:
-                self.printerr("Notifications requires the requests package:")
-                self.printerr()
-                self.printerr("\tpip install requests")
-                sys.exit(1)
-            self.requests = requests
+            self.http = urllib3.PoolManager()
 
         if self.notify_platform:
             self.printstatus(f"Notifications: {self.notify_platform} (id: {self.identifier})")
@@ -99,7 +96,7 @@ class NotificationEventHandler:
                 msg += f"**Correlation ID**: {sanitise_payload(correlation_id)}\n"
             if type in ["match", "correlation"]:
                 msg += f"**Request**:\n```http\n"
-                payload = f"{kwargs['requestline']}\n{kwargs['headers']}{kwargs['body']}\n"
+                payload = f"{kwargs['requestline']}\n{kwargs['headers']}{kwargs['body'].decode(errors='ignore')}\n"
                 msg += sanitise_payload(shorten(payload))
                 msg += "```"
             if type == "anomaly":
@@ -110,12 +107,17 @@ class NotificationEventHandler:
                 msg += f"```"
             data = {"content": msg}
             try:
-                self.requests.post(self.webhook_url, json=data)
-            except self.requests.exceptions.RequestException as e:
+                resp = self.http.request("POST", self.webhook_url, body=json.dumps(data),
+                                            headers={
+                                                "Content-Type": "application/json"
+                                            })
+                if resp.status >= 400:
+                    raise RuntimeError(f"response status: {resp.status} {resp.reason}")
+            except Exception as e:
                 self.logger.error(f'failed to send webhook: {e}')
 
 def shorten(x):
-    if x > MAX_SNIPPET_LEN:
+    if len(x) > MAX_SNIPPET_LEN:
         return x[:MAX_SNIPPET_LEN] + f"...({len(x) - MAX_SNIPPET_LEN} more bytes, {len(x)} bytes in total)..."
     return x
 
