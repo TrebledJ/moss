@@ -1,0 +1,52 @@
+# Sample configuration file.
+# Use # for comment.
+# Specify args in the same way you would in the CLI.
+
+# At most 1 arg flag and value per line.
+
+# Args with nargs='+' configured must have values on separate lines.
+# e.g. 
+#
+# -e ext/auth.py
+#    ext/file.py
+#
+# or
+# 
+# -e 
+#    ext/auth.py
+#    ext/file.py
+
+# Include modules (-e) and print help (-h) for more options!
+
+#--bind 0.0.0.0
+#--port 8000
+
+# [response]
+--status-code 404
+--body ''
+--server random
+-H 'X-Frame-Options: SAMEORIGIN'
+
+# [files]
+#--directory ''
+#--base-path /static
+
+# [logging]
+#--filter /mysecretendpoint
+#--correlation a1b2.*{12}
+#--jsonl out.jsonl
+--output-all
+--ignore-common-headers
+#--no-anomaly
+
+# [protocol]
+--https
+--certfile cert.pem
+--keyfile key.pem
+--websockets
+
+# [notifications]
+#--notify discord
+#--notify-on match
+#--webhook "https://your-webhook.com"
+#--id "local"

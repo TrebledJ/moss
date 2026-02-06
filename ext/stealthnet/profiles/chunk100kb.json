@@ -1,0 +1,53 @@
+{
+    "encryption": null,
+    "patterns": {
+        "chunkNo": {
+            "type": "header",
+            "name": "X-Chunk-Number"
+        },
+        "currentIndex": {
+            "type": "header",
+            "name": "X-Current-Index"
+        },
+        "finalIndex": {
+            "type": "header",
+            "name": "X-Final-Index"
+        },
+        "maxRetries": {
+            "type": "header",
+            "name": "X-Max-Retries"
+        },
+        "fnRev": {
+            "type": "header",
+            "name": "X-Filename"
+        }
+    },
+    "vars": {
+    },
+    "intermittent": [],
+    "common": {
+        "headers": {
+        }
+    },
+    "cycle": [
+        {
+            "count": [
+                1,
+                1
+            ],
+            "delay": [
+                100,
+                100
+            ],
+            "req": [
+                {
+                    "method": "POST",
+                    "url": "/chunkymonkey",
+                    "headers": {
+                    },
+                    "body": "${b64:100000:100000}"
+                }
+            ]
+        }
+    ]
+}

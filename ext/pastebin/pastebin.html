@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <meta name="color-scheme" content="light dark">
+  <style>
+    body {
+      font-family: system-ui, sans-serif;
+      max-width: 900px;
+      margin: 2rem auto;
+      padding: 0 1rem;
+    }
+    textarea {
+      width: 100%;
+      height: 180px;
+      font-family: monospace;
+      font-size: 1.05rem;
+      padding: 12px;
+      box-sizing: border-box;
+    }
+    .controls {
+      margin: 1.5rem 0;
+      display: flex;
+      gap: 1rem;
+      align-items: center;
+    }
+    button {
+      padding: 12px 32px;
+      font-size: 1.1rem;
+      background: #2563eb;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    button:hover { background: #1d4ed8; }
+    #status {
+      padding: 3px 8px;
+      border-radius: 6px;
+      min-height: 1em;
+    }
+    .success { background: #e6ffe6; color: #006600; }
+    .error   { background: #ffe6e6; color: #990000; }
+  </style>
+</head>
+<body>
+
+<textarea id="message" placeholder="Type or paste your message here..."></textarea>
+
+<div class="controls">
+  <button onclick="encryptAndSend()">Encrypt & Send</button>
+  <span id="status"></span>
+  <a id="link" href="javascript:void(0)"></a>
+</div>
+
+<script>
+// ────────────────────────────────────────────────
+//   Utility: base64 helpers
+// ────────────────────────────────────────────────
+function bufferToBase64(buffer) {
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  // Need to loop to avoid "Maximum call stack exceeded" error
+  for (let i = 0; i < bytes.length; i += 8192) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + 8192));
+  }
+  return btoa(binary);
+}
+
+function base64ToBuffer(base64) {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes.buffer;
+}
+
+// ────────────────────────────────────────────────
+//   Derive AES-GCM key from password + salt
+// ────────────────────────────────────────────────
+async function deriveKey(password, salt) {
+  const enc = new TextEncoder();
+  const keyMaterial = await crypto.subtle.importKey(
+    "raw",
+    enc.encode(password),
+    { name: "PBKDF2" },
+    false,
+    ["deriveBits", "deriveKey"]
+  );
+
+  return crypto.subtle.deriveKey(
+    {
+      name: "PBKDF2",
+      salt,
+      iterations: 400000,           // reasonably secure in 2025
+      hash: "SHA-256"
+    },
+    keyMaterial,
+    { name: "AES-GCM", length: 256 },
+    true,                           // we don't need to export it
+    ["encrypt"]
+  );
+}
+
+// ────────────────────────────────────────────────
+//   Main encrypt + send logic
+// ────────────────────────────────────────────────
+async function encryptAndSend() {
+  const link = document.getElementById("link");
+  const status = document.getElementById("status");
+  status.textContent = "";
+  status.className = "";
+
+  const textarea = document.getElementById("message");
+  const plaintext = textarea.value.trim();
+
+  if (!plaintext) {
+    status.textContent = "Please enter some text first.";
+    status.className = "error";
+    return;
+  }
+
+  const password = prompt("Password:", "");
+  if (!password) {
+    status.textContent = "Encryption cancelled (no password entered).";
+    status.className = "error";
+    return;
+  }
+
+  link.href = "javascript:void(0)";
+  link.textContent = "";
+
+  try {
+    status.textContent = "Encrypting...";
+    status.className = "";
+
+    // 1. Generate random salt & IV
+    const salt = crypto.getRandomValues(new Uint8Array(16));
+    const iv   = crypto.getRandomValues(new Uint8Array(12));
+
+    // 2. Derive key
+    const key = await deriveKey(password, salt);
+
+    // 3. Encrypt
+    const enc = new TextEncoder();
+    const encryptedBuffer = await crypto.subtle.encrypt(
+      {
+        name: "AES-GCM",
+        iv,
+        tagLength: 128
+      },
+      key,
+      enc.encode(plaintext)
+    );
+
+    // 4. Prepare payload
+    const payload = {
+      iv:   bufferToBase64(iv),
+      salt: bufferToBase64(salt),
+      data: bufferToBase64(encryptedBuffer)
+    };
+
+    // 5. Send to server
+    const response = await fetch("{{PATH}}", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+
+    if (!response.ok) {
+      throw new Error(`Server returned ${response.status}`);
+    }
+
+    const result = await response.json();
+
+    status.textContent = result.message || "Message sent successfully (encrypted)";
+    status.className = "success";
+    link.href = result.url;
+    link.textContent = result.url;
+
+  } catch (err) {
+    console.error(err);
+    status.textContent = "Error: " + (err.message || "Encryption / network failure");
+    status.className = "error";
+  }
+}
+</script>
+
+</body>
+</html>

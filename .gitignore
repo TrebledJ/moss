@@ -1,4 +1,5 @@
-simpleoast.toml
+config.txt
+launch.json
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

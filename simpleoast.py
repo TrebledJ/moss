@@ -3,7 +3,6 @@ import argparse
 import json
 import logging
 from http.server import HTTPStatus, ThreadingHTTPServer, BaseHTTPRequestHandler
-from datetime import datetime
 import random
 import sys
 import re
@@ -17,7 +16,11 @@ import select
 import ssl
 import http.client
 from dataclasses import dataclass, field
-import tomllib
+import dataclasses
+import importlib
+from pathlib import Path
+from collections import defaultdict
+import time
 
 # Extensions
 # try:
@@ -32,8 +35,11 @@ import tomllib
 #     printe('websockets loaded!')
 
 
-VERSION = '0.2'
+__version__ = '1.0'
 
+MAX_LENGTH_TO_LOG = 1024
+
+# These headers will be filtered out when `ignore_common_headers` is specified.
 COMMON_HEADERS = [
     'accept',
     'accept-encoding',
@@ -45,20 +51,30 @@ COMMON_HEADERS = [
     'priority',
 ]
 
+# These are a collection of WEBDAV HTTP methods. Probably won't need to modify this.
 WEBDAV_COMMANDS = [
     'PROPFIND', 'PROPPATCH', 'MKCOL', 'COPY', 'MOVE', 'LOCK', 'UNLOCK',
 ]
 
+# The number of seconds to wait on the initial socket before timing out.
+# TODO: test nc client, send 1 byte, then hang
 SOCKET_TIMEOUT = 30
 
+# Controls the size of the queue used to pass messages from RequestHandlers to the main server thread.
+QUEUE_MAX_SIZE = 40
+
+# Controls the maximum length of the first line of a HTTP request.
 MAX_REQUESTLINE_LENGTH = 8192
 
-CLR_CYN = "\033[96m"
-CLR_GRN = "\033[92m"
-CLR_YLW = "\033[93m"
-CLR_BLU = "\033[94m"
-CLR_RED = "\033[91m"
-CLR_RST = "\033[0m"
+# Pretty colours!
+class Whatever: pass
+c = Whatever()
+c.CYN = CLR_CYN = "\033[96m"
+c.GRN = CLR_GRN = "\033[92m"
+c.YLW = CLR_YLW = "\033[93m"
+c.BLU = CLR_BLU = "\033[94m"
+c.RED = CLR_RED = "\033[91m"
+c.RST = CLR_RST = "\033[0m"
 
 logging.basicConfig(format=f'{CLR_CYN}[%(asctime)s]{CLR_RST} {CLR_YLW}%(levelname)s{CLR_RST} %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
 logger = logging.getLogger("simpleoast")
@@ -74,6 +90,20 @@ def random_server():
 def printe(*args, **kwargs):
     print(*args, **kwargs, flush=True, file=sys.stderr)
 
+def _field(default, group=None, doc="", metadata={}, flags=[], choices=[], **kwargs):
+    """Simple wrapper to express fields more conveniently."""
+    dwargs = {}
+    if type(default).__name__ in ['function', 'type']:
+        dwargs["default_factory"] = default
+    else:
+        dwargs["default"] = default
+    return field(**dwargs, metadata=metadata | dict(group=group, doc=doc, flags=flags, choices=choices, **kwargs))
+
+def strip_headers_in_place(headers):
+    for k in list(headers.keys()):
+        if k.lower() in COMMON_HEADERS:
+            del headers[k]
+
 class OastRequestHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -86,7 +116,7 @@ class OastRequestHandler(BaseHTTPRequestHandler):
         self.proto = 'TCP'
         
         self.connect_timestamp = self.log_date_time_string()
-        self.info(f"socket opened")
+        self.debug(f"socket opened")
 
         """
         1. Peek 1 byte into the socket
@@ -101,7 +131,7 @@ class OastRequestHandler(BaseHTTPRequestHandler):
         ready = select.select([request], [], [], SOCKET_TIMEOUT)
         if not ready[0]:
             # testcase: nc $host $port, then wait
-            self.push_anomaly_event(
+            self.handle_anomaly(
                 f'connection timed out',
                 tags=['portscan', 'dos'],
             )
@@ -111,7 +141,7 @@ class OastRequestHandler(BaseHTTPRequestHandler):
             bytes_ = request.recv(1024, socket.MSG_PEEK)
         except ConnectionResetError as e:
             # testcase: nmap -sT
-            self.push_anomaly_event(
+            self.handle_anomaly(
                 f'connection reset: {e}',
                 tags=['portscan'],
             )
@@ -119,28 +149,26 @@ class OastRequestHandler(BaseHTTPRequestHandler):
         
         if len(bytes_) == 0:
             # testcase: nc $host $port, then ^C
-            self.push_anomaly_event(
+            self.handle_anomaly(
                 f'socket opened, but no incoming bytes (during peek)',
                 tags=['portscan'],
             )
             return
 
-        self.info(f"peeked: {'ssl' if bytes_[0] == 0x16 else 'non-ssl'}")
+        self.debug(f"peeked: {'ssl' if bytes_[0] == 0x16 else 'non-ssl'}")
         if bytes_[0] == 0x16:
             # TLS
-            if server.support_https:
+            if server.supports_https:
                 self.certfile = server.certfile
                 self.keyfile = server.keyfile
-                self.password = server.password
-                self.alpn_protocols = (
-                    ["http/1.1"] if server.alpn_protocols is None else server.alpn_protocols
-                )
+                self.password = None
+                self.alpn_protocols = ["http/1.1"]
                 context = self._create_context()
                 try:
                     request = context.wrap_socket(request, server_side=True)
                 except ConnectionResetError as e:
-                    self.info(f"connection reset error during init")
-                    self.push_anomaly_event(f'{e.__class__.__name__} (during init): {e}')
+                    self.debug(f"connection reset error during init")
+                    self.handle_anomaly(f'{e.__class__.__name__} (during init): {e}')
                     return
                 except ssl.SSLError as e:
                     # TODO: Maybe it's not SSL? handle that case?
@@ -148,23 +176,26 @@ class OastRequestHandler(BaseHTTPRequestHandler):
                     if 'SSLV3_ALERT_BAD_CERTIFICATE' in str(e):
                         # testcase: certain browsers
                         tags.extend(['insecure-ssl-cert'])
-                    self.info(f"ssl error during init")
-                    self.push_anomaly_event(f'ssl error (during init): {e}', tags=tags)
+                    self.debug(f"ssl error during init")
+                    self.handle_anomaly(f'ssl error (during init): {e}', tags=tags, details=bytes_)
                     return
-                self.info(f"completed ssl handshake")
+                self.debug(f"completed ssl handshake")
                 self.proto = 'TLS/SSL'
                 self.is_ssl = True
             else:
-                self.push_anomaly_event(f'detected TLS/SSL or other protocol, but https was not enabled')
+                self.handle_anomaly(f'detected TLS/SSL or other protocol, but https was not enabled')
                 return
         else:
             if server.https_only:
-                self.push_anomaly_event(f'expected HTTPS only, but got something else', details=bytes_)
+                self.handle_anomaly(f'expected HTTPS only, but got something else', details=bytes_)
                 return
 
         super().__init__(request, client_address, server)
 
-    def info(self, msg, *args, **kwargs):
+    def debug(self, msg):
+        logger.debug(f"{CLR_GRN}[{self.client_address[0]}:{self.client_address[1]}]{CLR_RST} {msg}")
+
+    def info(self, msg):
         logger.info(f"{CLR_GRN}[{self.client_address[0]}:{self.client_address[1]}]{CLR_RST} {msg}")
 
     def _create_context(self):
@@ -173,45 +204,6 @@ class OastRequestHandler(BaseHTTPRequestHandler):
         context.load_cert_chain(self.certfile, self.keyfile, self.password)
         context.set_alpn_protocols(self.alpn_protocols)
         return context
-
-    def push_event(self, **kwargs):
-        kwargs = dict(
-            connect_timestamp=getattr(self, 'connect_timestamp', None),
-            request_timestamp=getattr(self, 'request_timestamp', None),
-            proto=getattr(self, 'proto', 'unknown'),
-            event_timestamp=self.log_date_time_string(),
-            client=self.client_address[0], # + ':' + str(self.client_address[1]),
-            **kwargs,
-        )
-        if self.server.queue.full():
-            self.server.queue.put(kwargs, block=True)
-        else:
-            self.server.queue.put(kwargs, block=False)
-
-    def push_request_event(self):
-        self.push_event(
-            method=self.command,
-            path=self.path,
-            headers=self.headers,
-            requestline=self.requestline,
-            body=self.body,
-        )
-    
-    def push_anomaly_event(self, anomaly='unknown anomaly', **kwargs):
-        if requestline := getattr(self, 'requestline', None):
-            kwargs['requestline'] = requestline
-        if headers := getattr(self, 'headers', None):
-            kwargs['headers'] = headers
-        # if body := ??? # Not possible? would need to be passed through param or reading rfile...
-        # TODO: read the rest of rfile and set as body? But would that disrupt subsequent requests in the connection? (think: HTTP 1 request smuggling)
-        if 'tags' not in kwargs:
-            kwargs['tags'] = []
-        if 'details' not in kwargs:
-            kwargs['details'] = ''
-        self.push_event(
-            anomaly=anomaly,
-            **kwargs,
-        )
 
     def send_response(self, code, message=None):
         self.send_response_only(code, message)
@@ -222,124 +214,79 @@ class OastRequestHandler(BaseHTTPRequestHandler):
 
         self.send_header('Date', self.date_time_string())
 
-    def send_file(self, path):
-        mime_type, content = self.server.files[self.path]
-        self.send_header('Content-Type', mime_type)
-        self.send_header('Content-Length', len(content))
-        self.end_headers()
-        self.wfile.write(content)
-        self.push_event(response_message=f"sent file {self.path} with {len(content)} bytes")
-
-    def send_response_body(self):
-        if self.path in self.server.files:
-            self.send_response(200)
-            self.send_file(self.path)
-        else:
-            self.send_response(self.server.default_status_code)
-            self.send_header('Content-Length', len(self.server.default_body))
-            self.end_headers()
-            self.wfile.write(self.server.default_body)
-    
-    def do_GET(self):
-        if self.path.startswith('http://'):
-            # TODO: proxy connection
-            self.proto = "PROXY/" + self.proto
-
-        if self.server.support_ws:
-            # TODO: handle upgrade and listen for ws
-            if self.headers.get('upgrade', '').lower() == 'websocket':
-                self.proto = "WSS" if self.is_ssl else "WS"
-                self.push_request_event()
-                self.send_invalid_method_and_close()
-                return
-
-        # if (self.headers['upgrade'] or '').lower() == 'h2c':
-        #     # Upgrade request to HTTP2.
-        #     self.proto += "2"
-        #     self.push_request_event("GET")
-        #     return
-
-        self.push_request_event()
-        self.send_response_body()
-        
-    def do_POST(self):
-        self.push_request_event()
-        self.send_response_body()
-
-    def do_PUT(self):
-        self.push_request_event()
-        # if self.path == '/api/v2/healthcheck':
-            
-        self.send_response_body()
-
-    def do_PATCH(self):
-        self.push_request_event()
-        self.send_response_body()
-
-    def do_DELETE(self):
-        self.push_request_event()
-        self.send_response_body()
-
-    def do_HEAD(self):
-        self.push_request_event()
-        self.send_response(200)
-        self.send_header('Content-Length', 0)
-        self.end_headers()
-
-    def do_OPTIONS(self):
-        self.push_request_event()
-        self.send_response(200)
-        self.send_header('Content-Length', 0)
-        self.end_headers()
-
-    def do_CONNECT(self):
-        self.proto = "TUNNEL/" + self.proto
-        self.push_request_event()
-        # TODO: implement proxying for traffic
-        self.send_invalid_method_and_close()
-
-    def do_PRI(self):
-        self.proto += "2"
-        self.push_request_event()
-        self.send_invalid_method_and_close()
-
-    def send_invalid_method_and_close(self):
-        self.send_response(405)
-        self.send_header('Connection', 'close')
-        self.end_headers()
-
     def send_error(self, code, message=None, explain=None):
         """Override send_error to report anomalies"""
-        self.push_anomaly_event(message, explain=explain)
+        kwargs = {}
+        if explain:
+            kwargs["details"] = f"Explanation: {explain}"
+        self.handle_anomaly(message, **kwargs)
         self.send_response(code, message)
-        self.send_header('Connection', 'close')
+        self.send_header("Connection", "close")
         self.end_headers()
-        # return super().send_error(code, message, explain)
 
-    def handle_webdav(self):
-        self.proto = "WEBDAV/" + self.proto
-        self.push_request_event()
-        self.send_invalid_method_and_close()
+    def is_match(self, requestline, body):
+        f_str = (self.server.filter_str or "").encode()
+        if not f_str:
+            return True
+        return f_str in requestline.encode() or f_str in body
+
+    def extract_correlation_id(self, requestline, headers, body):
+        r = self.server.correlation_regex
+        if not r:
+            return None
+
+        results = r.findall(f"{requestline}\n{headers}\n{body.decode('utf-8', errors='replace')}")
+        if results:
+            return results[0]
+        else:
+            return None
+
+    def handle_anomaly(self, anomaly='unknown anomaly', **kwargs):
+        mname = 'handle_anomaly'
+        for proc in self.server.processors:
+            if hasattr(proc, mname):
+                method = getattr(proc, mname)
+                if method(self, anomaly=anomaly, **kwargs):
+                    break
+        else:
+            printe(f"unhandled anomaly: {anomaly}; {kwargs}")
 
     def handle_method(self, method):
-        self.info(f"parsed HTTP method: {method}")
-        if method in WEBDAV_COMMANDS:
-            self.handle_webdav(method)
-            return
-        mname = 'do_' + method
-        if not hasattr(self, mname):
+        """Dispatch method to processors.
+        
+        If a processor method returns True, then stop processing.
+        """
+        self.debug(f"parsed HTTP method: {method}")
+
+        for proc in self.server.processors:
+            mname = 'do_' + method
+            if hasattr(proc, mname):
+                mfunc = getattr(proc, mname)
+                if mfunc(self): break
+                continue
+            mname = 'handle_fallback'
+            if hasattr(proc, mname):
+                mfunc = getattr(proc, mname)
+                if mfunc(self): break
+                continue
+        else:
+            # Method not found.
             self.send_error(
                 HTTPStatus.NOT_IMPLEMENTED,
                 "Unsupported method (%r)" % method)
-            return
-        method = getattr(self, mname)
-        method()
+
+    def log_date_time_string(self):
+        """Override freedom time dd/mm/yyyy with global standards."""
+        now = time.time()
+        year, month, day, hh, mm, ss, x, y, z = time.localtime(now)
+        s = "%04d-%02d-%02d %02d:%02d:%02d" % (
+                year, month, day, hh, mm, ss)
+        return s
 
     def handle_one_request(self):
         """Override the high-level handling of a request.
-
-        Adds: timestamp
-        Modifies: set a lower requestline length limit
+        + timestamp
+        + set a lower requestline length limit
         """
         self.request_timestamp = self.log_date_time_string()
         try:
@@ -357,7 +304,9 @@ class OastRequestHandler(BaseHTTPRequestHandler):
                 # An error code has been sent, just exit
                 return
             content_length = int(self.headers.get('Content-Length', 0))
-            self.body = self.rfile.read(content_length).decode('utf-8', errors='replace')
+            self.body = self.rfile.read(content_length)
+            self.filter_matches = self.is_match(self.requestline, self.body)
+            self.correlation_id = self.extract_correlation_id(self.requestline, self.headers, self.body)
             self.handle_method(self.command)
             self.wfile.flush() #actually send the response if not already done.
         except TimeoutError as e:
@@ -373,6 +322,7 @@ class OastRequestHandler(BaseHTTPRequestHandler):
         modifications:
         + assign .proto to HTTP/HTTPS after some verification
         + don't freak out on HTTP/2.0
+        + other plumbing
 
         ---
 
@@ -390,7 +340,7 @@ class OastRequestHandler(BaseHTTPRequestHandler):
         self.command = None  # set in case of error on the first line
         self.requestline = ''
         self.headers = {}
-        self.body = ''
+        self.body = b''
         
         self.request_version = version = self.default_request_version
         self.close_connection = True
@@ -499,29 +449,29 @@ class OastRequestHandler(BaseHTTPRequestHandler):
                 return False
         return True
 
-    def peek_for_websocket(self, sock):
-        """NOTE: MSG_PEEK does not work with SSL sockets, likely bc SSL decryption can't be streamed but is done in blocks?"""
-        # Peek a bit generously.
-        data = sock.recv(MAX_REQUESTLINE_LENGTH + 1000, socket.MSG_PEEK)
-        lines = data.split(b'\n')
-        if len(lines) <= 1:
-            return False
+    # def peek_for_websocket(self, sock):
+    #     """NOTE: MSG_PEEK does not work with SSL sockets, likely bc SSL decryption can't be streamed but is done in blocks?"""
+    #     # Peek a bit generously.
+    #     data = sock.recv(MAX_REQUESTLINE_LENGTH + 1000, socket.MSG_PEEK)
+    #     lines = data.split(b'\n')
+    #     if len(lines) <= 1:
+    #         return False
 
-        # Parse headers.
-        for line in lines[1:]:
-            if not line:
-                break # End of headers, start of body.
+    #     # Parse headers.
+    #     for line in lines[1:]:
+    #         if not line:
+    #             break # End of headers, start of body.
 
-            try:
-                name, value = line.split(b':', 1)
-            except TypeError: # malformed header, invalid HTTP
-                logger.debug(f"Detected malformed HTTP line: {line}, skipping ws peek")
-                break
+    #         try:
+    #             name, value = line.split(b':', 1)
+    #         except TypeError: # malformed header, invalid HTTP
+    #             logger.debug(f"Detected malformed HTTP line: {line}, skipping ws peek")
+    #             break
             
-            if (name.strip().lower(), value.strip().lower()) == (b'upgrade', b'websocket'):
-                return True
+    #         if (name.strip().lower(), value.strip().lower()) == (b'upgrade', b'websocket'):
+    #             return True
 
-        return False
+    #     return False
 
     # def handle_websocket(self):
     #     # self.push_request_event("CONNECT")
@@ -530,7 +480,7 @@ class OastRequestHandler(BaseHTTPRequestHandler):
     def handle(self):
         """Override handle to catch low-level socket errors gracefully."""
         
-        # if self.server.support_ws:
+        # if self.server.supports_ws:
         #     self.is_ws = self.peek_for_websocket(self.connection)
         #     if self.is_ws:
         #         self.proto = "WSS" if self.is_ssl else "WS"
@@ -539,27 +489,27 @@ class OastRequestHandler(BaseHTTPRequestHandler):
             # if self.is_ws:
             #     self.handle_websocket()
             # else:
-            self.info("handling request...")
+            self.debug("handling request...")
             super().handle()
         except (ConnectionResetError, BrokenPipeError) as e:
             # Log the reset but don't crash
-            self.push_anomaly_event(f"TCP socket was opened, but connection reset ({e})")
+            self.handle_anomaly(f"TCP socket was opened, but connection reset ({e})")
         except ssl.SSLError as e:
-            self.push_anomaly_event(f"ssl error during handle ({e})")
+            self.handle_anomaly(f"ssl error during handle ({e})")
         finally:
             try:
                 if self.is_ssl:
-                    self.info("closing ssl connection...")
+                    self.debug("closing ssl connection...")
                     self.connection.unwrap()
             except BrokenPipeError as e:
-                self.push_anomaly_event(f"{e.__class__.__name__}: {e}", tags=["insecure-ssl-cert", "signer-not-trusted"])
+                self.handle_anomaly(f"{e.__class__.__name__}: {e}", tags=["insecure-ssl-cert", "signer-not-trusted"])
             except ssl.SSLError as e:
-                self.push_anomaly_event(
+                self.handle_anomaly(
                     f"ssl error 2 ({e})",
                     tags=["ssl-domain-enumeration", "insecure-ssl-cert", "cert-subject-name-does-not-match-hostname", "close-connection"]
                 )
             except Exception as e:
-                self.push_anomaly_event(f"{e.__class__.__name__}: {e} (during ssl unwrap)")
+                self.handle_anomaly(f"{e.__class__.__name__}: {e} (during ssl unwrap)")
                 
             # Safely clear buffers and close the connection
             try:
@@ -574,58 +524,105 @@ class OastRequestHandler(BaseHTTPRequestHandler):
         # We don't want the default log
         pass
 
-class HttpOastServer:
-    def __init__(
-        self,
-        host: str = '0.0.0.0',
-        port: int = 8080,
-        RequestHandlerClass = OastRequestHandler,
-        *,
-        default_status_code: int = 200,
-        default_body: str = '',
-        server_header: str = None,
-        headers: List[str] = [],
-        static_file_prefix: str = '/static',
-        support_ws: bool = False,
-        support_https: bool = False,
-        https_only: bool = False,
-        certfile = None,
-        keyfile = None,
-    ):
-        self.server = server = ThreadingHTTPServer((host, port), RequestHandlerClass)
-        server.port = port
-        server.files = self.files = {}
-        server.queue = self.queue = queue.Queue(maxsize=30)
-        server.default_status_code = default_status_code
-        server.default_body = default_body
-        server.server_header = server_header
-        server.headers = []
-        for h in headers:
-            k, v = h.split(':')
-            server.headers.append((k.strip(), v.strip()))
-        self.static_file_prefix = static_file_prefix
-        server.running = False
-        server.support_ws = support_ws
-        server.support_https = support_https or https_only
-        server.https_only = https_only
-        server.certfile = certfile
-        server.keyfile = keyfile
-        server.password = None
-        server.alpn_protocols = None
+def inject_class_utils(clss):
+    for cls in clss:
+        if not hasattr(cls, "logger"):
+            cls.logger = logger
+        cls.printe = lambda cls, msg: printe(f"{msg}")
+        cls.printerr = lambda cls, msg: printe(f"{CLR_RED}{msg}{CLR_RST}")
+        cls.printstatus = lambda cls, msg: printe(f"{CLR_CYN}{msg}{CLR_RST}")
+        cls.c = c
 
-    def serve_file(self, filename: str, content: bytes, mime_type: str = 'text/html'):
-        filename = os.path.realpath(f'{self.static_file_prefix}/{filename}')
-        self.files[filename] = (mime_type, content)
-        logger.info(f"Load {filename} with {mime_type} and {len(content)} bytes")
+def wrap_enqueue_mixin(clss):
+    out = []
+    for cls in clss:
+        @dataclass
+        class WrappedClass(EnqueueMixin, cls): pass
+        out.append(WrappedClass)
+    return out
+
+@dataclass
+class HttpOastServer:
+    host: str = _field('0.0.0.0', flags=["--bind", "-b", "--host"], doc="Bind to this address")
+    port: int = _field(8000, flags=["--port", "-p"])
     
-    @staticmethod
-    def _run_http_server(server):
+    RequestHandlerClass = OastRequestHandler
+    
+    server_header: str = _field("SimpleOAST (https://github.com/TrebledJ/simpleoast)", group="response", flags=["--server"], doc="Server header in response. Special values: random, none")
+    headers: list[str] = _field(list, group="response", flags=["--header", "-H"], doc="Headers to include in server output. You can specify multiple of these, e.g. -H 'Set-Cookie: a=b' -H 'Content-Type: application/json'")
+
+    supports_ws: bool = _field(False, group="protocols", flags=["--websockets"], doc="Enable websocket support. Limited support, currently only detects the HTTP handshake")
+
+    supports_https: bool = _field(False, group="https", flags=["--https"], doc="Enable https polyglot support")
+    https_only: bool = _field(False, group="https", doc="Force HTTPS, ignore raw HTTP")
+    certfile: str = _field(None, group="https", doc="Public key")
+    keyfile: str = _field(None, group="https", doc="Private key")
+
+    filter_str: str = _field(None, group="matching", flags=["--filter"], doc="Match request line and body")
+    correlation_regex: str = _field('', group="matching", flags=["--correlation", "-r"], doc="Extract correlation ID based on regex, this works independently of the filter")
+
+    def __post_init__(self):
+        self._validate()
+        self.processors = []
+        params = self.__dict__.items()
+
+        self.server = server = ThreadingHTTPServer((self.host, self.port), self.RequestHandlerClass)
+        server.queue = self.queue = queue.Queue(maxsize=QUEUE_MAX_SIZE)
+        for attr, value in params:
+            setattr(server, attr, value)
+        server.running = False
+        # super().__post_init__() # No super post init. This class should be last one in a mixin chain.
+
+    def _validate(self):
+        # Convert headers into list of pairs.
+        headers, self.headers = self.headers, []
+        for h in headers:
+            k, v = h.split(':', 1)
+            self.headers.append((k.strip(), v.strip()))
+
+        self.correlation_regex = re.compile(self.correlation_regex) if self.correlation_regex else None
+
+        if self.server_header == 'random':
+            self.server_header = random_server()
+        elif self.server_header == 'none':
+            self.server_header = None
+
+        if self.https_only: # Implicitly enable https.
+            self.https = True
+
+        if self.supports_https:
+            if not self.certfile or not self.keyfile:
+                printe(f"{CLR_RED}HTTPS enabled, but certfile or keyfile was not provided{CLR_RST}")
+                sys.exit(1)
+
+            if not os.path.exists(self.certfile):
+                printe(f"{CLR_RED}certfile does not exist:{CLR_RST}: {self.certfile}")
+                sys.exit(1)
+            if not os.path.exists(self.keyfile):
+                printe(f"{CLR_RED}keyfile does not exist:{CLR_RST}: {self.keyfile}")
+                sys.exit(1)
+
+        printe(f"{CLR_GRN}Server listening on {self.host}:{self.port}{CLR_RST}")
+        if self.filter_str: printe(f"{CLR_YLW}Filter active:{CLR_RST} {self.filter_str}")
+        if self.correlation_regex: printe(f"{CLR_YLW}Correlation ID regex:{CLR_RST} {self.correlation_regex}")
+
+    @classmethod
+    def from_args(cls, args: argparse.Namespace):
+        inst = build_dataclass_from_args(cls, args)
+        for P in cls._processors:
+            c = build_dataclass_from_args(P, args)
+            inst.processors.append(c)
+        return inst
+
+
+    @classmethod
+    def _run_http_server(cls, server):
         server.serve_forever()
         server.server_close()
         
     def serve(self):
         self.server.running = True
-        self.thread = threading.Thread(target=HttpOastServer._run_http_server, args=(self.server, ))
+        self.thread = threading.Thread(target=self.__class__._run_http_server, args=(self.server, ))
         self.thread.start()
 
     def serve_forever(self):
@@ -634,63 +631,136 @@ class HttpOastServer:
     
     def wait(self, timeout=None):
         if self.server.running and timeout:
+            # "Blocking" with timeout.
             try:
                 return self.queue.get(timeout=timeout)
             except queue.Empty:
                 return None
         else:
-            # "Blocking"
+            # Wait forever.
             while self.server.running:
                 try:
-                    # Use polling here, in case we need to quit the thread (e.g. due to SIGINT / ^C)
-                    if item := self.queue.get(timeout=1):
+                    # Use polling here, in case we need to quit the thread (e.g. due to SIGINT / ^C).
+                    if item := self.queue.get(timeout=0.2):
                         return item
                 except queue.Empty:
                     pass
             return None
-        # items = self.queue.get()
-        # return items
 
     def shutdown(self):
         self.server.running = False
         self.server.shutdown()
-        # self.thread.join()
+
+
+@dataclass
+class ProtocolProcessor:
+    """This is a default pre-processor which updates the human-readable protocol field."""
+
+    def do_GET(self, req):
+        if req.path.startswith('http://'):
+            # TODO: proxy connection
+            req.proto = "PROXY/" + req.proto
+
+        if req.server.supports_ws:
+            # TODO: handle upgrade and listen for ws
+            if req.headers.get('upgrade', '').lower() == 'websocket':
+                req.proto = "WSS" if req.is_ssl else "WS"
+
+    def do_CONNECT(self, req):
+        req.proto = "TUNNEL/" + req.proto
+
+    def do_PRI(self, req):
+        req.proto += "2"
+
+    def handle_fallback(self, req):
+        if req.command in WEBDAV_COMMANDS:
+            req.proto = "WEBDAV/" + req.proto
+
+
+@dataclass
+class EnqueueMixin:
+    def push_event(self, req, **kwargs):
+        kwargs = dict(
+            connect_timestamp=getattr(req, 'connect_timestamp', None),
+            request_timestamp=getattr(req, 'request_timestamp', None),
+            proto=getattr(req, 'proto', 'unknown'),
+            event_timestamp=req.log_date_time_string(),
+            client=req.client_address[0], # + ':' + str(req.client_address[1]),
+            **kwargs,
+        )
+        if req.server.queue.full():
+            req.server.queue.put(kwargs, block=True)
+        else:
+            req.server.queue.put(kwargs, block=False)
+
+
+@dataclass
+class EnqueueProcessor(EnqueueMixin):
+    """This is a default processor which handles pushing events from RequestHandlers to the main server thread."""
+
+    KNOWN_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "CONNECT", "TRACE", "DEBUG", "PRI", *WEBDAV_COMMANDS]
+
+    def handle_fallback(self, req):
+        """handle_fallback and handle_anomaly could be called
+        from multiple threads. So we push the events to a queue to ensure only a single thread
+        is writing to file."""
+        if req.command in self.KNOWN_METHODS:
+            self.push_request_event(req)
+    
+    def handle_anomaly(self, req, anomaly='unknown anomaly', **kwargs):
+        if requestline := getattr(req, 'requestline', None):
+            kwargs['requestline'] = requestline
+        if headers := getattr(req, 'headers', None):
+            kwargs['headers'] = headers
+        if 'tags' not in kwargs:
+            kwargs['tags'] = []
+        if 'details' not in kwargs:
+            kwargs['details'] = ''
+        self.push_event(
+            req,
+            anomaly=anomaly,
+            **kwargs,
+        )
+        return True
+
+    def push_request_event(self, req):
+        self.push_event(
+            req,
+            method=req.command,
+            path=req.path,
+            headers=req.headers,
+            requestline=req.requestline,
+            body=req.body,
+            filter_matches=req.filter_matches,
+            correlation_id=req.correlation_id,
+        )
+
+
+def shorten(s):
+    if len(s) > MAX_LENGTH_TO_LOG:
+        return s[:MAX_LENGTH_TO_LOG] + f"...({len(s) - MAX_LENGTH_TO_LOG} more bytes, {len(s)} bytes in total)...".encode()
+    return s
 
 
 @dataclass
 class LoggingEventHandler:
     """
-    Simple example of handling events which outputs the events to console and file.
+    Consumes and outputs events to console, file, and notification webhook.
     """
-    filter_str: str = ''
-    correlation_regex: str = ''
-    output_all: bool = False
-    ignore_common_headers: bool = False
-    jsonl_file: str = ''
-    no_anomaly: bool = False
-    notify_platform: str = ''
-    notify_on: List[str] = field(default_factory=list)
-    webhook_url: str = ''
-    identifier: str = ''
+    output_all: bool = _field(False, group="logging", doc="Output all HTTP requests, including those that don't match the filter")
+    ignore_common_headers: bool = _field(False, group="logging", flags=["--ignore-common-headers", "-i"], doc="Exclude common request headers from display. This does not affect jsonl output")
+    jsonl_file: str = _field(None, group="logging", flags=["--jsonl", "-o"], doc="Output file path for JSONL logging (one JSON event per line). Use `--jsonl -` to output to stdout")
+    no_anomaly: bool = _field(False, group="logging", doc="Do not log anomalies")
+    simple: bool = _field(False, group="logging", doc="Use simple logging, one line per event")
+
     def __post_init__(self):
-        self.correlation_regex = re.compile(self.correlation_regex) if self.correlation_regex else None
-        if self.notify_platform:
-            try:
-                import requests
-            except ImportError:
-                printe('Notifications requires the requests package:')
-                printe()
-                printe('\tpip install requests')
-                sys.exit(1)
-            self.requests = requests
+        if self.jsonl_file: printe(f"{CLR_CYN}JSONL logging to:{CLR_RST} {self.jsonl_file}")
 
     def handle_event(self, data):
         """
         Handle events fired from the Request Handler. The implementation is up to you,
         but here I chose to base it structurally on field names, for convenience.
         i.e. find the first handler which accepts the data fields in its named parameters
-
-        The disadvantage of this is
         """
         event_handlers = [self.handle_request, self.handle_anomaly, self.handle_response]
         for func in event_handlers:
@@ -698,48 +768,34 @@ class LoggingEventHandler:
                 func(**data)
                 break
             except TypeError as e:
-                # Failed to fit parameters, move on
-                logger.debug(f'skipping {func.__name__}: {e}')
-                logger.debug(traceback.format_exc())
+                if 'missing' not in str(e):
+                    raise e # Actual error.
+                # # Failed to fit parameters, move on.
+                # logger.debug(f'skipping {__class__.__name__}.{func.__name__}: {e}')
+                # logger.debug(traceback.format_exc())
                 continue
         else:
             # Default handler
-            printe('Discarding event:', data)
+            logger.debug(f'{__class__.__name__} discarding event:', data)
 
     def handle_request(self, *, proto, method, requestline, path, headers, body, **kwargs):
-        matches = self.should_log(requestline, body)
+        matches = kwargs.get("filter_matches", False)
         if not matches and not self.output_all: return
-        correlation_id = self.extract_correlation_id(requestline, headers, body)
         self.log_to_jsonl(
             proto=proto, method=method, requestline=requestline, path=path, headers=headers, body=body,
-            filter_match=matches, correlation_id=correlation_id,
             **kwargs,
         )
-        
-        top_status = bot_status = proto
-        if matches:
-            if self.filter_str:
-                top_status = 'MATCH'
-        else:
-            top_status = 'REJECTED'
 
-        self.strip_headers_in_place(headers)
-        self.log_request_to_display(
-            method, requestline, path, headers, body, matches, correlation_id,
-            top_status, bot_status, **kwargs)
-        
-        notify_type = "none"
-        if matches:
-            notify_type = "match"
-        if correlation_id:
-            notify_type = "correlation"
-        self.notify(
-            notify_type, proto=proto, filter_match=matches, correlation_id=correlation_id,
-            requestline=requestline, path=path, headers=headers, body=body,
-            **kwargs)
+        if self.ignore_common_headers:
+            strip_headers_in_place(headers)
+        self.log_request_to_display(proto, requestline, headers, body, **kwargs)
 
     def handle_response(self, *, response_message, client, event_timestamp, **kwargs):
         self.log_to_jsonl(response_message=response_message, **kwargs)
+        if self.simple:
+            printe(f"[{event_timestamp.split(' ')[-1]}] {CLR_CYN}RESPN{CLR_CYN} {CLR_GRN}{response_message}{CLR_RST}")
+            return
+        
         status = 'RESPONSE'
         printe(f"{CLR_CYN}{status:><12}>{client:>>15}>>>{event_timestamp}{CLR_RST}")
         printe(f"{CLR_GRN}{response_message}{CLR_RST}")
@@ -751,12 +807,11 @@ class LoggingEventHandler:
         deets = escape_non_printable(details)
         self.log_to_jsonl(anomaly=anomaly, details=deets, **kwargs)
         self.log_anomaly_to_display(anomaly, details=details, **kwargs)
-        self.notify("anomaly", anomaly=anomaly, details=details, **kwargs)
 
-    def log_to_jsonl(self, *, headers=None, **kwargs):
+    def log_to_jsonl(self, *, headers=None, body='', **kwargs):
         if not self.jsonl_file: return
         jsonl_headers = {k.lower(): v for k, v in headers.items()} if headers else {}
-        output = json.dumps(dict(**kwargs, headers=jsonl_headers))
+        output = json.dumps(dict(**kwargs, headers=jsonl_headers, body=shorten(body)))
         if self.jsonl_file == '-':
             print(output, flush=True)
         else:
@@ -764,233 +819,312 @@ class LoggingEventHandler:
                 print(output, file=f, flush=True)
 
     def log_request_to_display(
-        self, method, requestline, path, headers, body, matches, correlation_id,
-        top_status, bot_status,
+        self, proto, requestline, headers, body,
         *, request_timestamp, event_timestamp, client,
+        filter_matches, correlation_id,
         **_kwargs,
     ):
-        if matches:
+        top_status = bot_status = proto
+        if not filter_matches:
+            top_status = 'REJECTED'
+
+        if self.simple:
+            brief = f"{CLR_CYN}MATCH{CLR_RST}" if filter_matches else f"{CLR_RED}REJCT{CLR_RST}"
+            method, path, *_ = requestline.split()
+            printe(f"[{event_timestamp.split(' ')[-1]}] {brief} [{client}] {CLR_GRN}{proto}{CLR_RST} {CLR_YLW}{method} {path[:30]}{CLR_RST} {CLR_BLU}{body[:30].decode('utf-8', errors='backslashreplace')}{CLR_RST}")
+            return
+
+        if filter_matches:
             printe(f"{CLR_CYN}{top_status:-<12}-{client:->15}---{request_timestamp}{CLR_RST}")
-            printe(f"{CLR_GRN}{requestline}{CLR_RST}")
+            printe(f"{CLR_GRN}{escape_non_printable(shorten(requestline))}{CLR_RST}")
             if headers:
                 printe(f"{CLR_YLW}{str(headers).strip()}{CLR_RST}")
-            if body: printe(f"{body}")
+            if body:
+                printe(f"{escape_non_printable(shorten(body))}")
             if correlation_id:
                 printe(f"{CLR_CYN}{bot_status:-<12}-{correlation_id:->15}---{event_timestamp}{CLR_RST}\n")
             else:
                 printe(f"{CLR_CYN}{bot_status:-<30}-{event_timestamp}{CLR_RST}\n")
         else:
             printe(f"{CLR_RED}{top_status:-<12}-{client:->15}---{request_timestamp}{CLR_RST}")
-            printe(f"{CLR_RED}{requestline}{CLR_RST}")
+            printe(f"{CLR_RED}{escape_non_printable(shorten(requestline))}{CLR_RST}")
             printe(f"{CLR_RED}{bot_status:-<30}-{event_timestamp}{CLR_RST}\n")
 
     def log_anomaly_to_display(self, anomaly, *, tags, details, connect_timestamp, event_timestamp, client, status='ANOMALY', **kwargs):
+        if self.simple:
+            printe(f"[{event_timestamp.split(' ')[-1]}] {CLR_YLW}ANMLY{CLR_RST} [{client}] {CLR_RED}{anomaly}{CLR_RST}")
+            return
+        
         printe(f"{CLR_YLW}{status:-<12}{client:->16}---{connect_timestamp}{CLR_RST}")
         printe(f"{CLR_RED}{anomaly}{CLR_RST}")
         if tags:
             c = ', '.join(tags)
             printe(f"{CLR_GRN}tags: {c}{CLR_RST}")
         if details:
-            printe(f"{CLR_YLW}{escape_non_printable(details)}{CLR_RST}")
+            printe(f"{CLR_YLW}{escape_non_printable(shorten(details))}{CLR_RST}")
         if requestline := kwargs.get('requestline', None):
-            printe(f"{CLR_YLW}{escape_non_printable(requestline)}{CLR_RST}")
+            printe(f"{CLR_YLW}{escape_non_printable(shorten(requestline))}{CLR_RST}")
         if headers := kwargs.get('headers', None):
             printe(f"{CLR_YLW}{escape_non_printable(str(headers).strip())}{CLR_RST}")
         if body := kwargs.get('body', None):
-            printe(f"{CLR_YLW}{escape_non_printable(body)}{CLR_RST}")
+            printe(f"{CLR_YLW}{escape_non_printable(shorten(body))}{CLR_RST}")
 
         bot_status = kwargs.get('proto', status)
         printe(f"{CLR_YLW}{bot_status:-<30}-{event_timestamp}{CLR_RST}\n")
 
-    def notify(self, type: Literal["match"] | Literal["correlation"] | Literal["anomaly"], event_timestamp, client, proto, **kwargs):
-        if not self.notify_platform:
-            return
-        if type in self.notify_on or "all" in self.notify_on:
-            emoji = ":bulb:" if type in ["match", "correlation"] else ":warning:"
-            msg = f"{emoji} {type.upper()} - [{event_timestamp}] {emoji}\n"
-            msg += f"**Instance**: {self.identifier}\n"
-            msg += f"**Protocol**: {proto}\n"
-            msg += f"**Client IP**: {client}\n"
-            if matches := kwargs.get("filter_match", None):
-                msg += f"**Filter**: {self.filter_str}\n"
-            if correlation_id := kwargs.get("correlation_id", None):
-                msg += f"**Correlation ID**: {correlation_id}\n"
-            if type in ["match", "correlation"]:
-                msg += f"**Request**:\n```http\n"
-                msg += kwargs["requestline"] + "\n"
-                msg += str(kwargs["headers"])
-                msg += kwargs["body"] + "\n"
-                msg += "```"
-            if type == "anomaly":
-                msg += f"**Anomaly**:\n```\n"
-                msg += f"{kwargs['anomaly']}\n"
-                if deets := kwargs.get("details", None):
-                    msg += escape_non_printable(deets) + "\n"
-                msg += f"```"
-            data = {"content": msg}
-            try:
-                self.requests.post(self.webhook_url, json=data)
-            except self.requests.exceptions.RequestException as e:
-                logger.error(f'failed to send webhook: {e}')
+    
+@dataclass
+class DefaultProcessor:
+    default_status_code: int = _field(200, group="response", flags=["--status-code", "-S"], doc="The default status code to return")
+    default_body: str = _field("", group="response", flags=["--body"], doc="The default content to return. This could be a file, which will be loaded")
 
-    def strip_headers_in_place(self, headers):
-        if self.ignore_common_headers:
-            for k in list(headers.keys()):
-                if k.lower() in COMMON_HEADERS:
-                    del headers[k]
+    def __post_init__(self):
+        if b := self.default_body:
+            if os.path.exists(b):
+                with open(b, 'rb') as f:
+                    self.default_body = f.read()
+        if type(self.default_body) == str:
+            self.default_body = self.default_body.encode('utf-8')
 
-    def should_log(self, requestline, body):
-        f_str = self.filter_str
-        if not f_str:
-            return True
-        return f_str in requestline or f_str in body
+        if self.default_body:
+            status_message = OastRequestHandler.responses.get(self.default_status_code, ["(Unknown Status Code)"])[0]
+            printe(f"{CLR_CYN}Default response:{CLR_RST} {CLR_GRN}{self.default_status_code} {status_message}{CLR_RST}, {CLR_YLW}{len(self.default_body)} bytes{CLR_RST}")
 
-    def extract_correlation_id(self, requestline, headers, body):
-        r = self.correlation_regex
-        if not r:
-            return None
-
-        results = r.findall(f"{requestline}\n{headers}\n{body}")
-        if results:
-            return results[0]
+    def do_GET(self, req):
+        if req.server.supports_ws and (req.proto.endswith("WS") or req.proto.endswith("WSS")):
+            # TODO: handle upgrade and listen for ws
+            self.send_invalid_method_and_close(req)
         else:
-            return None
+            self.send_response_body(req)
+        return True
+
+    def do_HEAD(self, req):
+        req.send_response(200)
+        req.send_header('Content-Length', 0)
+        req.end_headers()
+        return True
+
+    def do_OPTIONS(self, req):
+        # TODO: ACAO
+        req.send_response(200)
+        req.send_header('Content-Length', 0)
+        req.end_headers()
+        return True
+
+    def send_response_body(self, req):
+        req.send_response(self.default_status_code)
+        req.send_header('Content-Length', len(self.default_body))
+        req.end_headers()
+        req.wfile.write(self.default_body)
+
+    def send_invalid_method_and_close(self, req):
+        # req.send_response(405)
+        # req.send_header('Connection', 'close')
+        # req.end_headers()
+        req.send_error(405, "Unsupported method (%r)" % req.command)
+        
+    def handle_fallback(self, req):
+        if req.command in ["POST", "PATCH", "PUT", "DELETE"]:
+            self.send_response_body(req)
+        else:
+            self.send_invalid_method_and_close(req)
+        return True
 
 def escape_non_printable(s):
     if type(s) == bytes:
         s = s.decode(errors='backslashreplace')
     return "".join(c if c.isprintable() or c in '\r\n' else r'\x{0:02x}'.format(ord(c)) for c in s)
 
-def scan_and_read_files(directory_path):
-    content = {}
-    for root, dirs, files in os.walk(directory_path):
-        for filename in files:
-            file_path = os.path.join(root, filename)
-            with open(file_path, 'rb') as f:
-                rel_file_path = os.path.relpath(file_path, start=directory_path)
-                content[rel_file_path] = f.read()
+def add_args_from_dataclass(parser, *DataClasses):
+    """Simple thingymabob to convert dataclass fields to argparse args."""
+    # First, group by "field.metadata.group".
+    ordered = [] # Preserve the order in which groups are seen.
+    groups = defaultdict(list)
+    seen_fields = {}
+    for DataClass in DataClasses:
+        for arg in getattr(DataClass, "__match_args__", []):
+            field = DataClass.__dataclass_fields__[arg]
+            if not field.metadata.get('cli', True): # Skip if cli==False
+                continue
 
-    return content
+            if field.name in seen_fields:
+                # We can accept duplicate fields, because some fields may be
+                # needed across multiple extensions and it's sometimes hard for
+                # one extension to coordinate with others.
+                f, dupcls = seen_fields[field.name]
+                if f.default == field.default \
+                    and f.default_factory == field.default_factory \
+                    and f.type == field.type:
+                    # OK! Everything matches.
+                    continue
+                else:
+                    # Nope, the duplicate field should at least have the same basics.
+                    raise RuntimeError(f"encountered duplicate field {field.name} in class {dupcls.__name__} and {DataClass.__name__}; make sure the type and defaults match")
+            else:
+                seen_fields[field.name] = (field, DataClass)
 
-def start_server(args, port, files, **kwargs):
-    server = HttpOastServer(
-        args.bind, port,
-        **dict(
-            default_status_code=args.status_code,
-            default_body=args.body,
-            server_header=args.server,
-            headers=args.header,
-            static_file_prefix=args.base_path,
-            support_https=args.https,
-            certfile=args.certfile,
-            keyfile=args.keyfile,
-            support_ws=args.websockets,
-        ) | kwargs,
-    )
+            group = field.metadata.get('group', None) or 'default'
+            groups[group].append(field)
+            if group not in ordered:
+                ordered.append(group)
 
-    if files:
-        for filename, content in files.items():
-            server.serve_file(filename, content)
-    
-    return server
+    for group in ordered:
+        fields = groups[group]
+        gparser = parser.add_argument_group(group) if group != "default" else parser
+        for field in fields:
+            # Add the field to the parser.
+            flags = field.metadata.get("flags", []) or ["--" + field.name.replace("_", "-")]
+            kwargs = dict(type=field.type)
+            kwargs["dest"] = field.name
+            if field.default is not dataclasses.MISSING:
+                kwargs['default'] = field.default
+                if field.type == bool:
+                    kwargs['action'] = 'store_true' if field.default == False else 'store_false'
+                    del kwargs['type'] # store_{true,false} does not play nice with `type`.
+            elif field.default_factory is not dataclasses.MISSING:
+                kwargs['default'] = field.default_factory()
+                if field.default_factory == list:
+                    if get_origin(kwargs['type']) == list:
+                        # Use the inner argument for type. e.g. list[str] -> type=str.
+                        kwargs['type'] = get_args(kwargs['type'])[0]
+                    kwargs['action'] = 'append'
+            else:
+                raise RuntimeError("both default and default_factory are missing")
+            if doc := getattr(field, 'doc', None): # Available in higher Python versions.
+                kwargs['help'] = doc
+            elif doc := field.metadata.get('doc', None):
+                kwargs['help'] = doc
+            if choices := field.metadata.get('choices', None):
+                kwargs['choices'] = choices
 
+            gparser.add_argument(*flags, **kwargs)
+
+def get_dataclass_args(DataClass, namespace):
+    kwargs = {}
+    for arg in getattr(DataClass, '__match_args__', []):
+        if (attr := getattr(namespace, arg, None)) is not None:
+            kwargs[arg] = attr
+    return kwargs
+
+def build_dataclass_from_args(DataClass, namespace):
+    return DataClass(**get_dataclass_args(DataClass, namespace))
 
 class Formatter(argparse.RawDescriptionHelpFormatter, argparse.ArgumentDefaultsHelpFormatter):
     pass
 
-def run():
-    parser = argparse.ArgumentParser(
-        description=f"Dead simple HTTP OAST server by TrebledJ.",
-        formatter_class=Formatter,
-    )
+def load_module(path):
+    path = Path(path)
+    mod_name = path.stem
+    spec = importlib.util.spec_from_file_location(mod_name, path)
+    if spec is None or spec.loader is None:
+        return None
+    mod = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(mod)
+    except FileNotFoundError:
+        return None
+    return mod
+
+def find_extension_classes(module):
+    mixins, processors, handlers = [], [], []
+    for name in dir(module):
+        if name.endswith('Mixin'):
+            mixins.append(getattr(module, name))
+        elif name.endswith('Processor'):
+            processors.append(getattr(module, name))
+        elif name.endswith('Handler'):
+            handlers.append(getattr(module, name))
+    return mixins, processors, handlers
+
+class FancySchmancyArgumentParser(argparse.ArgumentParser):
+    """
+    One arg name-pair per line.
+    Lines will be stripped.
+    # for comment.
     
-    parser.add_argument("--bind", "-b", type=str, default='0.0.0.0', help="Bind to this address")
-    parser.add_argument("--port", "-p", type=int, default=8000)
-    parser.add_argument('-v', action='count', default=0, help='Verbosity. -v for INFO, -vv for DEBUG messages.')
-    parser.add_argument('--config', '-c', type=str, help='.toml config file')
+    Example:
+    --arg
+    --arg 1
+    --arg '1'
+    --arg "1"
 
-    group = parser.add_argument_group('response')
-    group.add_argument("--status-code", "-S", type=int, default=200, help="The default status code to return")
-    group.add_argument("--body", type=str, default='', help="The default content to return. This could be a file, which will be loaded")
-    group.add_argument("--server", type=str, default='SimpleOAST (https://github.com/TrebledJ/simpleoast)', help="Server header in response. Special values: random, none")
-    group.add_argument("--header", "-H", type=str, action='append', default=[], help='Headers to include in server output. You can specify multiple of these arguments')
+    For nargs='+', arguments must be split into lines. For instance:
 
-    group.add_argument("--directory", "-d", type=str, help='The directory to serve files from. Files served from this directory always return status code 200')
-    group.add_argument("--base-path", type=str, default='/static', help='The base path to "put" static files in. A base path of /static means files can be accessed through http://HOSTNAME:PORT/static')
-
-    group = parser.add_argument_group('display/logging')
-    group.add_argument("--filter", type=str, default=None, help="Match request line and body")
-    group.add_argument("--correlation-regex", "-r", type=str, help='Extract correlation ID based on regex, this works independently of the filter')
-    group.add_argument("--jsonl", "-o", type=str, help="Output file path for JSONL logging (one JSON event per line). Use `--jsonl -` to output to stdout")
-    group.add_argument("--output-all", "-f", action='store_true', help="Output all HTTP requests, including those that don't match the filter")
-    group.add_argument("--ignore-common-headers", "-i", action='store_true', help='Exclude common request headers from display. This does not affect jsonl output')
-    group.add_argument("--no-anomaly", action='store_true', help='Do not log anomalies')
-
-    group = parser.add_argument_group('protocol')
-    group.add_argument('--https', action='store_true', help='Enable https polyglot support. ')
-    group.add_argument("--certfile", type=str, help='')
-    group.add_argument("--keyfile", type=str, help='')
-    group.add_argument("--websockets", "-ws", action='store_true', help='Enable websocket support. Limited support, currently only detects the HTTP handshake')
-    
-    group.add_argument("--start80443", action='store_true', help='Start a http server on port 80, and https server on port 443. Ignores the --port parameter')
-
-    group = parser.add_argument_group('notifications')
-    group.add_argument('--notify', choices=['discord'], help='Enable third-party notifications')
-    group.add_argument('--notify-on', choices=['match', 'correlation', 'anomaly', 'all'], default=['match'], nargs='+', help='You can pass multiple choices, for example: `--notify-on match anomaly`. "all" means notify on match/correlation/anomaly')
-    group.add_argument('--webhook', type=str, help='Webhook URL')
-    group.add_argument('--id', type=str, default=None, help='An identifier which will be sent along with the notification, primarily to help you identify this instance in case you have multiple running. An id will be automatically generated if not provided')
-
-    pargs = parser.parse_args()
-
-    if pargs.config:
+    --arg 1
+          2
+    --arg
+        1
+        2
+    """
+    def convert_arg_line_to_args(self, arg_line):
+        line = arg_line.strip()
+        if not line or line.startswith('#'):
+            return []
         try:
-            with open(pargs.config, 'rb') as f:
-                conf = tomllib.load(f)
-        except FileNotFoundError as e:
-            printe(e)
+            first, arg = line.split(' ', 1)
+        except ValueError:
+            # no space, single arg
+            return [line]
+        arg = arg.strip()
+        if len(arg) >= 2:
+            if arg.startswith("'") and arg.endswith("'"):
+                arg = arg[1:-1]
+            elif arg.startswith('"') and arg.endswith('"'):
+                arg = arg[1:-1]
+
+        return [first, arg]
+
+def run(ServerClass=HttpOastServer, RequestHandlerClasss=OastRequestHandler):
+    # Handle extension flags
+    parser = FancySchmancyArgumentParser(
+        fromfile_prefix_chars='@',
+        add_help=False,
+    )
+    # parser.add_argument("--ext", "-e", type=str, default=[], action='append')
+    parser.add_argument("--ext", "-e", type=str, default=[], nargs='+')
+    args, rest_args = parser.parse_known_args()
+    exts = args.ext
+
+    # Load modules
+    mixins, processors, handlers = [], [], []
+    for ext in exts:
+        mod = load_module(ext)
+        if mod is None:
+            printe(f"{CLR_RED}module not found: {ext}{CLR_RST}")
             sys.exit(1)
-    else:
-        conf = {}
+        
+        m, p, h = find_extension_classes(mod)
+        # printe(f"{CLR_CYN}Loaded module {ext} ({len(m)}:{len(p)}:{len(h)}){CLR_RST}")
+        mixins += m
+        processors += p
+        handlers += h
 
-    # Reparse args to overwrite older arguments
-    # print('config:', dict(**conf))
-    # print('args:', pargs.__dict__)
-    args = parser.parse_args(namespace=argparse.Namespace(**conf))
-    # print('new args:', args.__dict__)
-    
+    inject_class_utils(mixins)
+    inject_class_utils(processors)
+    inject_class_utils(handlers)
+    processors = wrap_enqueue_mixin(processors)
+    mixins = mixins[::-1] # Reverse so that they are loaded/displayed in the order specified in args
+    handlers = [LoggingEventHandler, *handlers]
 
-    if args.directory and not os.path.exists(args.directory):
-        printe(f"{CLR_RED}path does not exist:{CLR_RST}: {args.directory}")
-        sys.exit(1)
+    @dataclass
+    class Server(*mixins, ServerClass):
+        _processors = [ProtocolProcessor, EnqueueProcessor, *processors, DefaultProcessor]
+        RequestHandlerClass = RequestHandlerClasss
 
-    if args.https:
-        if not args.certfile or not args.keyfile:
-            printe(f"{CLR_RED}HTTPS enabled, but certfile or keyfile was not provided{CLR_RST}")
-            sys.exit(1)
+    parser = FancySchmancyArgumentParser(
+        description=f"Simple, modular HTTP OAST server by TrebledJ, v{__version__}",
+        formatter_class=Formatter,
+        fromfile_prefix_chars='@',
+    )
 
-        if not os.path.exists(args.certfile):
-            printe(f"{CLR_RED}certfile does not exist:{CLR_RST}: {args.certfile}")
-            sys.exit(1)
-        if not os.path.exists(args.keyfile):
-            printe(f"{CLR_RED}keyfile does not exist:{CLR_RST}: {args.keyfile}")
-            sys.exit(1)
-    
-    if args.body:
-        if os.path.exists(args.body):
-            with open(args.body, 'rb') as f:
-                args.body = f.read()
-    if type(args.body) == str:
-        args.body = args.body.encode('utf-8')
-    
-    if args.id is None:
-        args.id = f"{socket.gethostname()}_{args.port}"
-        if args.start80443:
-            args.id = f"{socket.gethostname()}_web"
+    # Add -e here so that it shows up in help, even though it would be processed before.
+    parser.add_argument("--ext", "-e", type=str, default=[], nargs='+', help="Load extensions (Python files). Works with bash file glob/expansion, e.g. -e ext/{file,upload}.py")
+    parser.add_argument('-v', action='count', default=0, help='Verbosity. -v for INFO, -vv for DEBUG messages.')
 
-    if args.server == 'random':
-        args.server = random_server()
-    elif args.server == 'none':
-        args.server = None
+    # Add all CLI args from dataclasses.
+    add_args_from_dataclass(parser, Server, *Server._processors, *handlers)
+
+    args = parser.parse_args(rest_args)
 
     if args.v == 0:
         logger.setLevel(logging.WARNING)
@@ -998,52 +1132,12 @@ def run():
         logger.setLevel(logging.INFO)
     else:
         logger.setLevel(logging.DEBUG)
-    
-    # try:
-    #     if args.websockets and websockets:
-    #         pass
-    # except NameError:
-    #     printe(f"{CLR_RED}Error: unable to load websockets module.{CLR_RST}")
-    #     printe(f"Make sure you have websockets installed: pip install websockets")
-    #     sys.exit(1)
 
-    # Prepare files.
-    if args.directory:
-        files = scan_and_read_files(args.directory)
-    else:
-        files = {}
+    server = Server.from_args(args)
+    handlers = [build_dataclass_from_args(H, args) for H in handlers]
 
-    if args.start80443:
-        server80 = start_server(args, 80, files, support_https=False)
-        server443 = start_server(args, 443, files, https_only=True)
-        servers = [server80, server443]
-        printe(f"{CLR_GRN}Server listening on {args.bind}:{80} and {args.bind}:{443}{CLR_RST}")
-    else:
-        servers = [start_server(args, args.port, files)]
-        printe(f"{CLR_GRN}Server listening on {args.bind}:{args.port}{CLR_RST}")
-
-    if args.body:
-        status_message = OastRequestHandler.responses.get(args.status_code, ["(Unknown Status)"])[0]
-        printe(f"{CLR_CYN}Default response:{CLR_RST} {CLR_GRN}{args.status_code} {status_message}{CLR_RST}, {CLR_YLW}{len(args.body)} bytes{CLR_RST}")
-
-    if args.filter: printe(f"{CLR_YLW}Filter active:{CLR_RST} {args.filter}")
-    if args.correlation_regex: printe(f"{CLR_YLW}Correlation ID regex:{CLR_RST} {args.correlation_regex}")
-    if args.jsonl: printe(f"{CLR_CYN}JSONL logging to:{CLR_RST} {args.jsonl}")
-    if args.notify: printe(f"{CLR_CYN}Notifications:{CLR_RST} {args.notify}")
+    servers = [server]
     printe()
-
-    handler = LoggingEventHandler(
-        filter_str=args.filter,
-        output_all=args.output_all,
-        jsonl_file=args.jsonl,
-        ignore_common_headers=args.ignore_common_headers,
-        correlation_regex=args.correlation_regex,
-        no_anomaly=args.no_anomaly,
-        notify_platform=args.notify,
-        notify_on=args.notify_on,
-        webhook_url=args.webhook,
-        identifier=args.id,
-    )
 
     for server in servers:
         server.serve()
@@ -1053,7 +1147,15 @@ def run():
         while True:
             for server in servers:
                 if (event := server.wait(0.2)) is not None:
-                    handler.handle_event(event)
+                    for h in handlers:
+                        try:
+                            h.handle_event(event)
+                        except KeyboardInterrupt as e:
+                            raise e
+                        except Exception as e:
+                            printe(f"{CLR_RED}An error occurred while in {h.__class__.__name__} while handling an event: {e}{CLR_RST}")
+                            printe(f"{CLR_RED}Le event: {event}{CLR_RST}")
+                            printe(traceback.format_exc())
     except KeyboardInterrupt:
         for server in servers:
             server.shutdown()

@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta name="viewport" content="width=device-width, user-scalable=no" />
+  <meta name="color-scheme" content="light dark">
+  <style>p { font-size: 14px; }</style>
+</head>
+
+<body>
+  <form action="upload" method="POST" enctype="multipart/form-data">
+    <input id="fileInput" name="files" type="file" multiple />
+    <br />
+    <br />
+    <button type="submit">Upload</button>
+    <button type="reset">Cancel</button>
+    <!-- <button id="resume">Resume</button> -->
+  </form>
+  <p id="task"></p>
+  <p id="sha1"></p>
+  <p id="sha256"></p>
+  <p id="status"></p>
+</body>
+<script id="profdata" type="application/json">{{PROFILE}}</script>
+<script src="{{BASE_URL}}/index.js">
+</script>
+
+</html>

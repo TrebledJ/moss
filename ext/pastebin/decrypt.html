@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <meta name="color-scheme" content="light dark">
+  <style>
+    body {
+      font-family: system-ui, sans-serif;
+      max-width: 900px;
+      margin: 2rem auto;
+      padding: 0 1rem;
+    }
+    textarea { 
+      width: 100%;
+      height: 180px;
+      font-family: monospace;
+      font-size: 1.05px;
+      padding: 12px;
+      box-sizing: border-box;
+    }
+    .row {
+      display: flex;
+      gap: 1.2rem;
+      align-items: center;
+      flex-wrap: wrap;
+      margin: 2rem 0 1.8rem;
+    }
+    button {
+      padding: 12px 32px;
+      font-size: 1.1rem;
+      background: #2563eb;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    button:hover { background: #1d4ed8; }
+    #status {
+      font-weight: 500;
+      min-height: 1.4em;
+    }
+    /* #result {
+      margin-top: 1.5rem;
+      padding: 16px 20px;
+      border-radius: 8px;
+      white-space: pre-wrap;
+      word-break: break-word;
+      min-height: 5em;
+      font-size: 1.05rem;
+      line-height: 1.6;
+    } */
+    /* .success { background: #e6ffe6; color: #006600; } */
+    /* .error   { background: #ffe6e6; color: #990000; } */
+  </style>
+</head>
+<body>
+
+<script id="encrypted-data" type="application/json">{{PAYLOAD}}</script>
+
+<div class="row">
+  <button onclick="decryptIt()">Re-Enter Password</button>
+  <button id="copy-btn" onclick="copyToClipboard()">Copy</button>
+  <span id="status"></span>
+</div>
+
+<textarea id="result" disabled></textarea>
+
+<script>
+function copyToClipboard() {
+  const result = document.getElementById("result");
+  const text = result.textContent;
+  if (result.className === "error") {
+    document.getElementById("status").innerText = "Nothing to copy";
+    return;
+  }
+  navigator.clipboard.writeText(text).then(() => {
+    document.getElementById("status").innerText = "Copied!";
+  }).catch(() => {
+    document.getElementById("status").innerText = "Copy failed :(";
+  });
+}
+
+// Helpers
+function base64ToBuf(b64) {
+  const bin = atob(b64.trim());
+  const arr = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+  return arr.buffer;
+}
+
+function bufToStr(buffer) {
+  return new TextDecoder().decode(buffer);
+}
+
+async function pbkdf2(password, salt) {
+  const enc = new TextEncoder();
+  const baseKey = await crypto.subtle.importKey(
+    "raw", enc.encode(password), "PBKDF2", false, ["deriveBits", "deriveKey"]
+  );
+
+  return crypto.subtle.deriveKey(
+    { name: "PBKDF2", salt, iterations: 400000, hash: "SHA-256" },
+    baseKey,
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["decrypt"]
+  );
+}
+
+async function decryptIt() {
+  const status = document.getElementById("status");
+  const result = document.getElementById("result");
+
+  status.textContent = "";
+  result.textContent = "";
+  result.className = "";
+
+  const jsonStr = document.getElementById('encrypted-data').textContent.trim();
+  if (!jsonStr) {
+    status.textContent = "No encrypted data available";
+    result.className = "error";
+    result.textContent = "The payload placeholder was not replaced by the server.";
+    return;
+  }
+
+  let payload;
+  try {
+    payload = JSON.parse(jsonStr);
+  } catch (e) {
+    status.textContent = "Invalid data format";
+    result.className = "error";
+    result.textContent = "Could not parse the encrypted payload.\n\n" + e.message;
+    return;
+  }
+
+  const { iv, salt, data } = payload;
+  if (!iv || !salt || !data) {
+    status.textContent = "Missing fields";
+    result.className = "error";
+    result.textContent = "Payload is missing iv, salt or data";
+    return;
+  }
+
+  const password = prompt("Enter decryption password:", "");
+  if (!password) {
+    status.textContent = "Cancelled";
+    return;
+  }
+
+  status.textContent = "Decrypting...";
+
+  try {
+    const saltBuf = base64ToBuf(salt);
+    const ivBuf   = base64ToBuf(iv);
+    const ctBuf   = base64ToBuf(data);
+
+    if (ivBuf.byteLength !== 12)  throw new Error("IV must be 12 bytes");
+    if (saltBuf.byteLength !== 16) throw new Error("Salt must be 16 bytes");
+    if (ctBuf.byteLength < 16)     throw new Error("Ciphertext too short");
+
+    const key = await pbkdf2(password, saltBuf);
+
+    const decrypted = await crypto.subtle.decrypt(
+      { name: "AES-GCM", iv: ivBuf, tagLength: 128 },
+      key,
+      ctBuf
+    );
+
+    const plaintext = bufToStr(decrypted);
+
+    result.textContent = plaintext;
+    result.className = "success";
+    status.textContent = "Decrypted successfully ✓";
+    
+  } catch (err) {
+    console.error(err);
+    let msg = err.message || "Decryption failed";
+
+    if (err.name === "OperationError") {
+      msg = "Wrong password!";
+    }
+
+    status.textContent = "Decryption failed";
+    result.className = "error";
+    result.textContent = msg;
+  }
+}
+
+decryptIt();
+</script>
+
+</body>
+</html>
