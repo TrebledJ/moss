@@ -187,13 +187,13 @@ def sanitise_filename(s: bytes | str) -> str:
 
 @dataclass
 class StealthBytesEventHandler:
-    upload_to: str = _field('dest', group=GROUP, doc="Store uploaded files in this directory")
+    stealth_upload_to: str = _field('dest', group=GROUP, doc="Store uploaded files in this directory")
     simple: bool = _field(False, group="logging", doc="Use simple logging, one line per event")
     # upload_max_size: int = _field(2 * 1024**3, group=GROUP, doc="Max file size accepted. Defaults to 2 GiB")
 
     def __post_init__(self):
-        if self.upload_to and not (p := Path(self.upload_to)).exists():
-            self.logger.warning(f"upload path did not exist, creating path... (mkdir {self.upload_to})")
+        if self.stealth_upload_to and not (p := Path(self.stealth_upload_to)).exists():
+            self.logger.warning(f"upload path did not exist, creating path... (mkdir {self.stealth_upload_to})")
             p.mkdir(parents=True, exist_ok=True)
 
     def handle_event(self, data):
@@ -206,7 +206,7 @@ class StealthBytesEventHandler:
     
     def handle_data(self, filename, bytes, currentIndex, finalIndex, **_):
         filename = sanitise_filename(filename)
-        file = Path(self.upload_to) / filename
+        file = Path(self.stealth_upload_to) / filename
         file.touch(exist_ok=True) 
 
         # Compute length based on indices, because bytes may be padded.
