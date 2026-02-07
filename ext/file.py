@@ -5,8 +5,7 @@ ext/file.py
 
 This is a simple extension which demonstrates a sending files from the local
 file system. Files are scanned and preloaded into memory for safety guarantees
-at the expense of memory. Another advantage of in-memory storage is to enable
-easy automation. You draft your SSRF/XXE payload, serve it, and BAM- you're in.
+at the expense of memory.
 
 When loaded, HttpOastServer is extended with a .serve_file() method, which
 accepts a file name (the HTTP sub-path to access the file), the content (in
