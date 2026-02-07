@@ -78,7 +78,7 @@ c.RED = CLR_RED = "\033[91m"
 c.RST = CLR_RST = "\033[0m"
 
 logging.basicConfig(format=f'{CLR_CYN}[%(asctime)s]{CLR_RST} {CLR_YLW}%(levelname)s{CLR_RST} %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
-logger = logging.getLogger("simpleoast")
+logger = logging.getLogger("moss")
 
 def random_server():
     return random.choice([
@@ -105,7 +105,7 @@ def strip_headers_in_place(headers):
         if k.lower() in COMMON_HEADERS:
             del headers[k]
 
-class OastRequestHandler(BaseHTTPRequestHandler):
+class MossRequestHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
     def __init__(self, request, client_address, server):
@@ -543,13 +543,13 @@ def wrap_enqueue_mixin(clss):
     return out
 
 @dataclass
-class HttpOastServer:
+class HttpMossServer:
     host: str = _field('0.0.0.0', flags=["--bind", "-b", "--host"], doc="Bind to this address")
     port: int = _field(8000, flags=["--port", "-p"])
     
-    RequestHandlerClass = OastRequestHandler
+    RequestHandlerClass = MossRequestHandler
     
-    server_header: str = _field("SimpleOAST (https://github.com/TrebledJ/simpleoast)", group="response", flags=["--server"], doc="Server header in response. Special values: random, none")
+    server_header: str = _field("moss (https://github.com/TrebledJ/moss)", group="response", flags=["--server"], doc="Server header in response. Special values: random, none")
     headers: list[str] = _field(list, group="response", flags=["--header", "-H"], doc="Headers to include in server output. You can specify multiple of these, e.g. -H 'Set-Cookie: a=b' -H 'Content-Type: application/json'")
 
     supports_ws: bool = _field(False, group="protocols", flags=["--websockets"], doc="Enable websocket support. Limited support, currently only detects the HTTP handshake")
@@ -889,7 +889,7 @@ class DefaultProcessor:
             self.default_body = self.default_body.encode('utf-8')
 
         if self.default_body:
-            status_message = OastRequestHandler.responses.get(self.default_status_code, ["(Unknown Status Code)"])[0]
+            status_message = MossRequestHandler.responses.get(self.default_status_code, ["(Unknown Status Code)"])[0]
             printe(f"{CLR_CYN}Default response:{CLR_RST} {CLR_GRN}{self.default_status_code} {status_message}{CLR_RST}, {CLR_YLW}{len(self.default_body)} bytes{CLR_RST}")
 
     def do_GET(self, req):
@@ -1076,7 +1076,7 @@ class FancySchmancyArgumentParser(argparse.ArgumentParser):
 
         return [first, arg]
 
-def run(ServerClass=HttpOastServer, RequestHandlerClasss=OastRequestHandler):
+def run(ServerClass=HttpMossServer, RequestHandlerClasss=MossRequestHandler):
     # Handle extension flags
     parser = FancySchmancyArgumentParser(
         fromfile_prefix_chars='@',
@@ -1114,7 +1114,7 @@ def run(ServerClass=HttpOastServer, RequestHandlerClasss=OastRequestHandler):
         RequestHandlerClass = RequestHandlerClasss
 
     parser = FancySchmancyArgumentParser(
-        description=f"Simple, modular HTTP OAST server by TrebledJ, v{__version__}",
+        description=f"Simple, modular offensive HTTP server by TrebledJ, v{__version__}",
         formatter_class=Formatter,
         fromfile_prefix_chars='@',
     )

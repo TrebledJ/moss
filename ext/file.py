@@ -7,7 +7,7 @@ This is a simple extension which demonstrates a sending files from the local
 file system. Files are scanned and preloaded into memory for safety guarantees
 at the expense of memory.
 
-When loaded, HttpOastServer is extended with a .serve_file() method, which
+When loaded, HttpMossServer is extended with a .serve_file() method, which
 accepts a file name (the HTTP sub-path to access the file), the content (in
 bytes), and the mime type.
 
