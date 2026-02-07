@@ -34,7 +34,7 @@ def random_id(n: int):
 
 @dataclass
 class AuthMixin:
-    token_auth: str = _field(None, group=GROUP, doc="Use the provided bearer token. Special values: generate (generates a token which will be printed to console or can be fetched via API)")
+    token_auth: str = _field(None, group=GROUP, doc="Use the provided bearer token. Special values: generate (generates a token which will be printed to console or can be programmatically fetched via a method)")
     basic_auth: str = _field(None, group=GROUP, doc="Basic authentication in the format username:password")
 
     def __post_init__(self):

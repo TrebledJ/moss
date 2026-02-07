@@ -21,6 +21,7 @@ import importlib
 from pathlib import Path
 from collections import defaultdict
 import time
+from copy import deepcopy
 
 # Extensions
 # try:
@@ -553,7 +554,7 @@ class HttpOastServer:
 
     supports_ws: bool = _field(False, group="protocols", flags=["--websockets"], doc="Enable websocket support. Limited support, currently only detects the HTTP handshake")
 
-    supports_https: bool = _field(False, group="https", flags=["--https"], doc="Enable https polyglot support")
+    supports_https: bool = _field(False, group="https", flags=["--https"], doc="Enable HTTPS polyglot support")
     https_only: bool = _field(False, group="https", doc="Force HTTPS, ignore raw HTTP")
     certfile: str = _field(None, group="https", doc="Public key")
     keyfile: str = _field(None, group="https", doc="Private key")
@@ -787,6 +788,7 @@ class LoggingEventHandler:
         )
 
         if self.ignore_common_headers:
+            headers = deepcopy(headers)
             strip_headers_in_place(headers)
         self.log_request_to_display(proto, requestline, headers, body, **kwargs)
 
@@ -1081,9 +1083,9 @@ def run(ServerClass=HttpOastServer, RequestHandlerClasss=OastRequestHandler):
         add_help=False,
     )
     # parser.add_argument("--ext", "-e", type=str, default=[], action='append')
-    parser.add_argument("--ext", "-e", type=str, default=[], nargs='+')
+    parser.add_argument("--ext", "-e", type=str, default=[], nargs='+', action='append')
     args, rest_args = parser.parse_known_args()
-    exts = args.ext
+    exts = [y for x in args.ext for y in x]
 
     # Load modules
     mixins, processors, handlers = [], [], []
