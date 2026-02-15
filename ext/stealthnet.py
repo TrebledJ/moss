@@ -43,7 +43,7 @@ def load_file(path):
 
 @dataclass
 class StealthyUploadMixin:
-    upload_path: str = _field("/upload", group=GROUP, doc="HTTP path which accepts upload payloads")
+    stealth_path: str = _field("/upload", group=GROUP, doc="HTTP path which accepts upload payloads")
     stealth_profile_path: str = _field("profile.json", group=GROUP, flags=["--stealth-profile"], doc="The stealth profile to use")
 
     def __post_init__(self):
@@ -77,25 +77,16 @@ class StealthyUploadMixin:
         return self.uploaded_file.get(file, None)
 
 class StealthyUploadProcessor:
-    def send_content(self, req, status, content=b'', mime='text/html'):
-        if type(content) == str:
-            content = content.encode('utf-8')
-        req.send_response(status)
-        req.send_header('Content-Type', mime)
-        req.send_header('Content-Length', len(content))
-        req.end_headers()
-        req.wfile.write(content)
-
     def do_GET(self, req):
         if req.path == "/favicon.ico":
-            return self.send_content(req, 404) # SHUTUP
-        if not req.path.startswith(req.server.upload_path):
+            return req.send_response(404) # SHUTUP
+        if not req.path.startswith(req.server.stealth_path):
             return self.handle_incoming_tx_request(req)
         
-        if req.path == req.server.upload_path:
+        if req.path == req.server.stealth_path:
             file = "index.html"
         else:
-            file = req.path[len(req.server.upload_path):].lstrip('/')
+            file = req.path[len(req.server.stealth_path):].lstrip('/')
         
         folder = Path(__file__).parent / "stealthnet"
         path = folder / file
@@ -115,9 +106,9 @@ class StealthyUploadProcessor:
             mime = 'text/html'
 
         # TODO: encrypt the profile?
-        content = content.replace(b"{{BASE_URL}}", req.server.upload_path.encode())
+        content = content.replace(b"{{BASE_URL}}", req.server.stealth_path.encode())
         content = content.replace(b"{{PROFILE}}", req.server.stealth_profile_str)
-        self.send_content(req, 200, content=content, mime=mime)
+        req.send_response(200, content=content, mime=mime)
         return True
     
     def handle_fallback(self, req):
@@ -131,17 +122,17 @@ class StealthyUploadProcessor:
         self.push_event(req, stealth=stealth)
         maxRetries = stealth.get("maxRetries", 0)
         if maxRetries > 0 and random.random() < 0.5:
-            self.send_content(req, 304)
+            req.send_response(304)
             return True
         
         if req.path.endswith('.js'):
             # Randomly generate .js file.
             content = generate_fake_minified_js()
-            self.send_content(req, 200, content, mime='text/javascript')
+            req.send_response(200, content=content, mime='text/javascript')
         # elif ...
         # TODO: handle API calls --> return JSON
         else:
-            self.send_content(req, 200)
+            req.send_response(200)
 
         return True
     

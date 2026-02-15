@@ -121,7 +121,17 @@ async function encryptAndSend() {
     return;
   }
 
-  const password = prompt("Password:", "");
+  let password;
+  let key = "{{SAVE_PSWD}}";
+  if (key) {
+    password = localStorage.getItem(key) ?? null;
+  }
+  if (!password) {
+    password = prompt("Password:", "");
+    if (key) {
+      localStorage.setItem(key, password);
+    }
+  }
   if (!password) {
     status.textContent = "Encryption cancelled (no password entered).";
     status.className = "error";

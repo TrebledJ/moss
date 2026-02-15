@@ -26,7 +26,10 @@ def _field(default, group=None, doc="", metadata={}, flags=[], choices=[], **kwa
 @dataclass
 class PastebinMixin:
     pastebin_path: str = _field("/pastebin", group=GROUP, doc="HTTP path which accepts pastebin payloads")
+    pastebin_fixed: str = _field(None, group=GROUP, doc="Write the pastebin to a fixed path")
     pastebin_max_size: int = _field(16 * 1024**2, group=GROUP, doc="Max file size accepted for files stored on disk. Defaults to 16 MiB")
+    pastebin_local_store: str = _field("", group=GROUP, doc="Save the encryption password to browser localStorage in PLAIN TEXT. Mainly for convenience. The string passed to this argument will be used as the localStorage key.")
+    
     def __post_init__(self):
         self.pastebin_files = {}
         super().__post_init__()
@@ -38,32 +41,23 @@ class PastebinMixin:
         return self.pastebin_files.get(id, None)
 
 class PastebinProcessor:
-    def send_response(self, req, status, content=b"", mime="text/html"):
-        req.send_response(status)
-        req.send_header('Content-Type', mime)
-        req.send_header('Content-Length', len(content))
-        req.end_headers()
-        req.wfile.write(content)
-
-    def send_json(self, req, status, data):
-        content = json.dumps(data).encode()
-        self.send_response(req, status, content, "application/json")
-
     def do_GET(self, req):
         if req.path.strip("/") == req.server.pastebin_path.strip("/"):
-            content = PASTEBIN_FORM_HTML.replace(b"{{PATH}}", req.server.pastebin_path.encode('utf-8'))
-            self.send_response(req, 200, content)
+            content = PASTEBIN_FORM_HTML.replace(b"{{PATH}}", req.server.pastebin_path.encode("utf-8"))
+            content = content.replace(b"{{SAVE_PSWD}}", req.server.pastebin_local_store.encode("utf-8"))
+            req.send_response(200, content=content)
             return True
         
         elif match := re.match(rf"^{req.server.pastebin_path}/(\w+)$", req.path):
             id = match.group(1)
             data = req.server.pastebin_files.get(id, None)
             if data is None:
-                self.send_response(req, 404)
+                req.send_response(404)
                 return True
             # TODO: make this more secure by enforcing data structure???
             content = PASTEBIN_VIEW_HTML.replace(b"{{PAYLOAD}}", data)
-            self.send_response(req, 200, content)
+            content = content.replace(b"{{SAVE_PSWD}}", req.server.pastebin_local_store.encode("utf-8"))
+            req.send_response(200, content=content)
             return True
         
     def do_POST(self, req):
@@ -73,17 +67,20 @@ class PastebinProcessor:
         length = len(req.body)
         if length > req.server.pastebin_max_size:
             self.printerr(f"Incoming data exceeded max pastebin size ({length} > {req.server.pastebin_max_size})")
-            self.send_json(req, 413, {
+            req.send_json(413, data={
                 "message": "Error: content length too large.",
             })
             return True
         
-        path = None
-        while (path is None) or (path in req.server.pastebin_files):
-            path = random_id(6)
+        if req.server.pastebin_fixed:
+            path = req.server.pastebin_fixed
+        else:
+            path = None
+            while (path is None) or (path in req.server.pastebin_files):
+                path = random_id(6)
 
         req.server.pastebin_files[path] = req.body
-        self.send_json(req, 201, {
+        req.send_json(201, data={
             "message": "Success!",
             "url": f"{req.server.pastebin_path}/{path}",
         })

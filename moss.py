@@ -137,7 +137,7 @@ class MossRequestHandler(BaseHTTPRequestHandler):
                 tags=['portscan', 'dos'],
             )
             return
-
+    
         try:
             bytes_ = request.recv(1024, socket.MSG_PEEK)
         except ConnectionResetError as e:
@@ -164,6 +164,7 @@ class MossRequestHandler(BaseHTTPRequestHandler):
                 self.keyfile = server.keyfile
                 self.password = None
                 self.alpn_protocols = ["http/1.1"]
+                self.wait(5)
                 context = self._create_context()
                 try:
                     request = context.wrap_socket(request, server_side=True)
@@ -174,11 +175,11 @@ class MossRequestHandler(BaseHTTPRequestHandler):
                 except ssl.SSLError as e:
                     # TODO: Maybe it's not SSL? handle that case?
                     tags = []
-                    if 'SSLV3_ALERT_BAD_CERTIFICATE' in str(e):
+                    if 'SSLV3_ALERT_BAD_CERTIFICATE' in str(e) or 'SSLV3_ALERT_CERTIFICATE_UNKNOWN' in str(e):
                         # testcase: certain browsers
                         tags.extend(['insecure-ssl-cert'])
                     self.debug(f"ssl error during init")
-                    self.handle_anomaly(f'ssl error (during init): {e}', tags=tags, details=bytes_)
+                    self.handle_anomaly(f'ssl error (during init): {e}', tags=tags)
                     return
                 self.debug(f"completed ssl handshake")
                 self.proto = 'TLS/SSL'
@@ -193,6 +194,19 @@ class MossRequestHandler(BaseHTTPRequestHandler):
 
         super().__init__(request, client_address, server)
 
+    def wait(self, timeout):
+        bl = self.request.getblocking()
+        self.request.setblocking(0) # set non-blocking to use with select
+        ready = select.select([self.request], [], [], timeout)
+        if not ready[0]:
+            self.debug('timed out')
+            self.handle_anomaly(
+                f'connection timed out',
+                tags=['dos'],
+            )
+            raise TimeoutError('connection timed out')
+        self.request.setblocking(bl)
+
     def debug(self, msg):
         logger.debug(f"{CLR_GRN}[{self.client_address[0]}:{self.client_address[1]}]{CLR_RST} {msg}")
 
@@ -206,7 +220,7 @@ class MossRequestHandler(BaseHTTPRequestHandler):
         context.set_alpn_protocols(self.alpn_protocols)
         return context
 
-    def send_response(self, code, message=None):
+    def send_response_top(self, code, message=None):
         self.send_response_only(code, message)
         if self.server.server_header:
             self.send_header('Server', self.server.server_header)
@@ -215,13 +229,26 @@ class MossRequestHandler(BaseHTTPRequestHandler):
 
         self.send_header('Date', self.date_time_string())
 
+    def send_response(self, code, *, message=None, content=b"", mime="text/html"):
+        if type(content) == str:
+            content = content.encode('utf-8')
+        self.send_response_top(code, message)
+        self.send_header('Content-Type', mime)
+        self.send_header('Content-Length', len(content))
+        self.end_headers()
+        self.wfile.write(content)
+
+    def send_json(self, code, *, data):
+        content = json.dumps(data).encode()
+        self.send_response(code, content=content, mime="application/json")
+
     def send_error(self, code, message=None, explain=None):
         """Override send_error to report anomalies"""
         kwargs = {}
         if explain:
             kwargs["details"] = f"Explanation: {explain}"
         self.handle_anomaly(message, **kwargs)
-        self.send_response(code, message)
+        self.send_response_top(code, message)
         self.send_header("Connection", "close")
         self.end_headers()
 
@@ -289,9 +316,12 @@ class MossRequestHandler(BaseHTTPRequestHandler):
         + timestamp
         + set a lower requestline length limit
         """
+        self.debug('handle one request')
         self.request_timestamp = self.log_date_time_string()
         try:
+            self.wait(5)
             self.raw_requestline = self.rfile.readline(MAX_REQUESTLINE_LENGTH + 1)
+            self.debug(f'read {len(self.raw_requestline)} bytes')
             if len(self.raw_requestline) > MAX_REQUESTLINE_LENGTH:
                 self.requestline = ''
                 self.request_version = ''
@@ -833,18 +863,21 @@ class LoggingEventHandler:
         if self.simple:
             brief = f"{CLR_CYN}MATCH{CLR_RST}" if filter_matches else f"{CLR_RED}REJCT{CLR_RST}"
             method, path, *_ = requestline.split()
-            printe(f"[{event_timestamp.split(' ')[-1]}] {brief} [{client}] {CLR_GRN}{proto}{CLR_RST} {CLR_YLW}{method} {path[:30]}{CLR_RST} {CLR_BLU}{body[:30].decode('utf-8', errors='backslashreplace')}{CLR_RST}")
+            e = escape_non_printable
+            reqline = f"{e(method)} {e(path[:30])}"
+            bod = e(body[:30].decode('utf-8', errors='backslashreplace'))
+            printe(f"[{event_timestamp.split(' ')[-1]}] {brief} [{client}] {CLR_GRN}{proto}{CLR_RST} {CLR_YLW}{reqline}{CLR_RST} {CLR_BLU}{bod}{CLR_RST}")
             return
 
         if filter_matches:
             printe(f"{CLR_CYN}{top_status:-<12}-{client:->15}---{request_timestamp}{CLR_RST}")
             printe(f"{CLR_GRN}{escape_non_printable(shorten(requestline))}{CLR_RST}")
             if headers:
-                printe(f"{CLR_YLW}{str(headers).strip()}{CLR_RST}")
+                printe(f"{CLR_YLW}{escape_non_printable(str(headers).strip())}{CLR_RST}")
             if body:
                 printe(f"{escape_non_printable(shorten(body))}")
             if correlation_id:
-                printe(f"{CLR_CYN}{bot_status:-<12}-{correlation_id:->15}---{event_timestamp}{CLR_RST}\n")
+                printe(f"{CLR_CYN}{bot_status:-<12}-{escape_non_printable(correlation_id):->15}---{event_timestamp}{CLR_RST}\n")
             else:
                 printe(f"{CLR_CYN}{bot_status:-<30}-{event_timestamp}{CLR_RST}\n")
         else:
@@ -878,6 +911,7 @@ class LoggingEventHandler:
 @dataclass
 class DefaultProcessor:
     default_status_code: int = _field(200, group="response", flags=["--status-code", "-S"], doc="The default status code to return")
+    default_mime_type: str = _field("text/html", group="response", flags=["--mime-type", "-M"], doc="The default mime type to return")
     default_body: str = _field("", group="response", flags=["--body"], doc="The default content to return. This could be a file, which will be loaded")
 
     def __post_init__(self):
@@ -914,15 +948,9 @@ class DefaultProcessor:
         return True
 
     def send_response_body(self, req):
-        req.send_response(self.default_status_code)
-        req.send_header('Content-Length', len(self.default_body))
-        req.end_headers()
-        req.wfile.write(self.default_body)
+        req.send_response(self.default_status_code, content=self.default_body, mime=self.default_mime_type)
 
     def send_invalid_method_and_close(self, req):
-        # req.send_response(405)
-        # req.send_header('Connection', 'close')
-        # req.end_headers()
         req.send_error(405, "Unsupported method (%r)" % req.command)
         
     def handle_fallback(self, req):
@@ -969,6 +997,12 @@ def add_args_from_dataclass(parser, *DataClasses):
             groups[group].append(field)
             if group not in ordered:
                 ordered.append(group)
+
+    # Reorder so that groups within the main module show up first.
+    _ordered, ordered = ordered, ['default', 'response', 'matching', 'logging', 'https', 'protocols']
+    for o in _ordered:
+        if o not in  ordered:
+            ordered.append(o)
 
     for group in ordered:
         fields = groups[group]

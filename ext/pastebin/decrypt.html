@@ -15,7 +15,7 @@
       width: 100%;
       height: 180px;
       font-family: monospace;
-      font-size: 1.05px;
+      font-size: 1.05rem;
       padding: 12px;
       box-sizing: border-box;
     }
@@ -141,7 +141,18 @@ async function decryptIt() {
     return;
   }
 
-  const password = prompt("Enter decryption password:", "");
+  let password;
+  let key = "{{SAVE_PSWD}}";
+  if (key) {
+    password = localStorage.getItem(key) ?? null;
+  }
+  if (!password) {
+    password = prompt("Enter decryption password:", "");
+    if (key) {
+      localStorage.setItem(key, password);
+    }
+  }
+
   if (!password) {
     status.textContent = "Cancelled";
     return;
