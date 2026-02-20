@@ -1,28 +1,415 @@
 <!DOCTYPE html>
-<html>
-
+<html lang="en">
 <head>
-  <meta name="viewport" content="width=device-width, user-scalable=no" />
-  <meta name="color-scheme" content="light dark">
-  <style>p { font-size: 14px; }</style>
-</head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+  <meta name="color-scheme" content="light dark" />
+  <title>Upload Files</title>
 
+  <style>
+    :root {
+      --bg: #f9fafb;
+      --card: #ffffff;
+      --text: #111827;
+      --text-secondary: #4b5563;
+      --border: #d1d5db;
+      --primary: #2563eb;
+      --primary-hover: #1d4ed8;
+      --success: #10b981;
+      --danger: #ef4444;
+      --gray: #6b7280;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #111827;
+        --card: #1f2937;
+        --text: #f3f4f6;
+        --text-secondary: #9ca3af;
+        --border: #374151;
+        --primary: #60a5fa;
+        --primary-hover: #3b82f6;
+      }
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      padding: 24px 16px;
+      display: grid;
+      place-items: center;
+    }
+
+    .container {
+      background: var(--card);
+      border-radius: 12px;
+      box-shadow: 0 10px 25px -5px rgba(0,0,0,0.1);
+      padding: 2rem;
+      width: 100%;
+      max-width: 500px;
+      border: 1px solid var(--border);
+    }
+
+    h1 {
+      font-size: 1.5rem;
+      text-align: center;
+      margin-bottom: 1.75rem;
+    }
+
+    .drop-zone {
+      border: 2px dashed var(--border);
+      border-radius: 10px;
+      padding: 2.5rem 1.5rem;
+      text-align: center;
+      transition: 0.2s ease;
+      cursor: pointer;
+      background: rgba(0,0,0,0.015);
+    }
+
+    .drop-zone:hover, .drop-zone.dragover {
+      border-color: var(--primary);
+      background: rgba(37,99,235,0.07);
+    }
+
+    .highlight { color: var(--primary); font-weight: 500; }
+
+    input[type="file"] { display: none; }
+
+    .file-list {
+      margin: 1.25rem 0;
+      max-height: 120px;
+      overflow-y: auto;
+      font-size: 0.92rem;
+    }
+
+    .file-item {
+      padding: 0.55rem 0.9rem;
+      background: rgba(0,0,0,0.025);
+      border-radius: 6px;
+      display: flex;
+      justify-content: space-between;
+      color: var(--text-secondary);
+    }
+
+    .progress-container {
+      margin: 1.5rem 0;
+      display: none;
+    }
+    #statusContainer {
+      display: block;
+    }
+
+    .progress-bar {
+      height: 8px;
+      background: #e5e7eb;
+      border-radius: 4px;
+      overflow: hidden;
+    }
+
+    .progress-fill {
+      height: 100%;
+      width: 0%;
+      background: var(--primary);
+      transition: width 0.15s ease;
+    }
+
+    .progress-info {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-top: 0.6rem;
+      font-size: 0.9rem;
+      color: var(--text-secondary);
+    }
+
+    .progress-percent {
+      font-weight: 600;
+      color: var(--primary);
+      min-width: 60px;
+      text-align: right;
+    }
+
+    .progress-stats {
+      margin-top: 0.5rem;
+      font-size: 0.85rem;
+      color: var(--text-secondary);
+      text-align: center;
+      opacity: 0.9;
+    }
+
+    .progress-stats-text {
+      font-weight: 500;
+      color: var(--text);
+    }
+
+    .progress-stats-minor-text {
+      font-weight: 500;
+      font-size: 0.7rem;
+      /* color: var(--text); */
+    }
+
+    .buttons {
+      display: flex;
+      gap: 12px;
+      margin-top: 1.8rem;
+    }
+
+    button {
+      flex: 1;
+      padding: 0.85rem;
+      font-size: 0.97rem;
+      border-radius: 8px;
+      border: none;
+      cursor: pointer;
+      font-weight: 500;
+      transition: 0.2s;
+    }
+
+    button[type="submit"] {
+      background: var(--primary);
+      color: white;
+    }
+    button[type="submit"]:hover { background: var(--primary-hover); }
+
+    button[type="reset"] {
+      background: var(--gray);
+      color: white;
+    }
+    button[type="reset"]:hover { background: #4b5563; }
+
+    .info {
+      margin-top: 1.4rem;
+      font-family: 'ui-monospace', 'SFMono-Regular', Menlo, Monaco, Consolas, monospace;
+      font-size: 0.875rem;
+      line-height: 1.55;
+      color: var(--text-secondary);
+      word-break: break-all;
+    }
+
+    #statusText.success { color: var(--success); }
+    #statusText.error   { color: var(--danger); }
+
+    @media (max-width: 480px) {
+      .container { padding: 1.6rem; }
+    }
+  </style>
+</head>
 <body>
-  <form action="upload" method="POST" enctype="multipart/form-data">
-    <input id="fileInput" name="files" type="file" multiple />
-    <br />
-    <br />
-    <button type="submit">Upload</button>
-    <button type="reset">Cancel</button>
-    <!-- <button id="resume">Resume</button> -->
-  </form>
-  <p id="task"></p>
-  <p id="sha1"></p>
-  <p id="sha256"></p>
-  <p id="status"></p>
-</body>
-<script id="profdata" type="application/json">{{PROFILE}}</script>
-<script src="{{BASE_URL}}/index.js">
+
+  <div class="container">
+    <h1>Upload Files</h1>
+
+    <form action="upload" method="POST" enctype="multipart/form-data" id="uploadForm">
+      <label for="fileInput">
+        <div class="drop-zone" id="dropZone">
+          <p>Drag & drop a file here</p>
+          <p>or <span class="highlight">click to browse</span></p>
+        </div>
+      </label>
+
+      <input id="fileInput" name="files" type="file" />
+
+      <div class="file-list" id="fileList"></div>
+
+      <div class="progress-container" id="progressContainer">
+        <div class="progress-bar">
+          <div class="progress-fill" id="progressFill"></div>
+        </div>
+        <div class="progress-info">
+          <span class="progress-stats">
+            <span id="bytesTransferred">0 B</span> / <span id="bytesTotal">—</span>
+          </span>
+          <span class="progress-percent" id="progressPercent">0%</span>
+        </div>
+        <div class="progress-stats">
+          ETA: <span class="progress-stats-text" id="etaText">—</span>
+        </div>
+        <div class="progress-stats progress-stats-minor-text">
+          File Name: <span id="filenameText">—</span>
+        </div>
+        <div class="progress-stats progress-stats-minor-text">
+          SHA1: <span id="sha1Text">—</span>
+        </div>
+        <div class="progress-stats progress-stats-minor-text">
+          SHA256: <span id="sha256Text">—</span>
+        </div>
+      </div>
+
+      <div class="progress-container" id="statusContainer">
+        <div class="progress-stats">
+          <span class="progress-stats-text" id="statusText">—</span>
+        </div>
+      </div>
+
+      <div class="buttons">
+        <button type="submit">Upload</button>
+        <button type="reset" id="cancelBtn">Cancel</button>
+      </div>
+    </form>
+  </div>
+
+  <script id="profdata" type="application/json">{{PROFILE}}</script>
+  <script src="{{BASE_URL}}/index.js"></script>
+
+ <script>
+  const dropZone   = document.getElementById('dropZone');
+  const fileInput  = document.getElementById('fileInput');
+  const fileListEl = document.getElementById('fileList');
+  const progressContainer = document.getElementById('progressContainer');
+  const progressFill      = document.getElementById('progressFill');
+  const progressPercent   = document.getElementById('progressPercent');
+  const bytesTransferred  = document.getElementById('bytesTransferred');
+  const bytesTotal        = document.getElementById('bytesTotal');
+  const etaText           = document.getElementById('etaText');
+  const filenameText           = document.getElementById('filenameText');
+  const sha1Text           = document.getElementById('sha1Text');
+  const sha256Text           = document.getElementById('sha256Text');
+  const statusText           = document.getElementById('statusText');
+
+  ['dragover','dragenter'].forEach(e=>dropZone.addEventListener(e,ev=>{ev.preventDefault(); dropZone.classList.add('dragover');}));
+  ['dragleave','drop'   ].forEach(e=>dropZone.addEventListener(e,ev=>{ev.preventDefault(); dropZone.classList.remove('dragover');}));
+
+  dropZone.addEventListener('drop', e=>{
+    if (e.dataTransfer.files.length) {
+      fileInput.files = e.dataTransfer.files;
+      showFiles();
+    }
+  });
+
+  fileInput.addEventListener('change', showFiles);
+
+  function showFiles() {
+    fileListEl.innerHTML = '';
+    if (!fileInput.files?.length) return;
+    [...fileInput.files].forEach(f=>{
+      const div = document.createElement('div');
+      div.className = 'file-item';
+      div.innerHTML = `<span>${f.name}</span><small>${(f.size/1024).toFixed(1)} KB</small>`;
+      fileListEl.appendChild(div);
+    });
+  }
+
+  document.getElementById('cancelBtn').onclick = ()=> {
+    // fileListEl.innerHTML = '';
+    // resetUploadProgress();
+    window.setStatus("Cancelled Upload");
+  };
+
+  // ── Convenience functions for upload logic (call from index.js) ────────────
+
+  // Pass an object with any combination of these keys:
+  // {
+  //   percent?: number,           // 0–100
+  //   loaded?: number,            // bytes
+  //   total?: number,             // bytes
+  //   eta?: string | number,      // seconds (will be formatted) or "—"
+  //   visible?: boolean           // show/hide container
+  // }
+  window.updateUploadProgress = function(options = {}) {
+    const {
+      percent = null,
+      loaded = null,
+      total = null,
+      eta = null,
+      filename = null,
+      sha1 = null,
+      sha256 = null,
+      visible = true
+    } = options;
+
+    // Visibility
+    progressContainer.style.display = visible ? 'block' : 'none';
+
+    // Progress bar + %
+    if (percent !== null) {
+      const clamped = Math.max(0, Math.min(100, Number(percent)));
+      progressFill.style.width = clamped + '%';
+      progressPercent.textContent = Math.round(clamped) + '%';
+    }
+
+    // Bytes transferred / total
+    if (loaded !== null || total !== null) {
+      const formatBytes = (b) => {
+        if (b == null || isNaN(b)) return '—';
+        const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+        let size = b;
+        let unitIndex = 0;
+        while (size >= 1024 && unitIndex < units.length - 1) {
+          size /= 1024;
+          unitIndex++;
+        }
+        return size.toFixed(unitIndex === 0 ? 0 : (size < 10 ? 1 : 0)) + ' ' + units[unitIndex];
+      };
+
+      bytesTransferred.textContent = formatBytes(loaded);
+      bytesTotal.textContent       = formatBytes(total);
+    }
+
+    // ETA
+    if (eta !== null) {
+      if (typeof eta === 'number' && eta > 0) {
+        const mins = Math.floor(eta / 60);
+        const secs = Math.floor(eta % 60);
+        etaText.textContent = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+      } else {
+        etaText.textContent = eta || '—';
+      }
+    }
+
+    if (filename !== null) {
+      filenameText.textContent = filename;
+    }
+
+    // sha1Text.parentElement.style.display = sha1 ? 'block' : 'none';
+    if (sha1 !== null) {
+      sha1Text.textContent = sha1;
+    }
+
+    // sha256Text.parentElement.style.display = sha256 ? 'block' : 'none';
+    if (sha256 !== null) {
+      sha256Text.textContent = sha256;
+    }
+  };
+
+  // Reset / hide convenience
+  window.resetUploadProgress = function() {
+    window.updateUploadProgress({
+      percent: 0,
+      loaded: null,
+      total: null,
+      eta: '—',
+      visible: false
+    });
+  };
+
+  // window.setStatus(text, state) = function() {
+  //   statusText.textContent = text;
+  //   if (state) {
+  //     statusText.classList.entries
+  //     statusText.classList.add(state);
+  //   }
+  // };
+
+  window.setStatus = function(message, type = '') {
+    statusText.textContent = message;
+    statusText.className = 'info';           // reset classes
+    if (type === 'success') statusText.classList.add('success');
+    if (type === 'error')   statusText.classList.add('error');
+  };
+
+  window.statusSuccess = function(msg) { window.setStatus(msg, 'success'); };
+  window.statusError   = function(msg) { window.setStatus(msg, 'error');   };
+  window.statusInfo    = function(msg) { window.setStatus(msg);            };
+
+  window.clearStatus = function() {
+    statusText.textContent = '';
+    statusText.className = 'info';
+  };
 </script>
 
+</body>
 </html>

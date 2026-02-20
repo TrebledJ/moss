@@ -8,10 +8,6 @@
             "type": "header",
             "name": "X-Final-Index"
         },
-        "retries": {
-            "type": "header",
-            "name": "X-Max-Retries"
-        },
         "filename": {
             "type": "header",
             "name": "X-Filename"
@@ -25,15 +21,12 @@
             ],
             "delay": [
                 100,
-                100
+                500
             ],
             "req": [
                 {
-                    "method": "POST",
-                    "url": "/chunkymonkey",
-                    "headers": {
-                    },
-                    "body": "${b64:100000:100000}"
+                    "method": "GET",
+                    "url": "/session?key=${b64:5000:5000}"
                 }
             ]
         }

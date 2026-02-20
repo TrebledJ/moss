@@ -24,6 +24,7 @@ import base64
 import binascii
 import re
 import json
+from typing import *
 
 GROUP = "stealthyupload (ext/stealthnet.py)"
 MAX_CACHED_UPLOADED_FILE_SIZE = 100_000
@@ -45,6 +46,7 @@ def load_file(path):
 class StealthyUploadMixin:
     stealth_path: str = _field("/upload", group=GROUP, doc="HTTP path which accepts upload payloads")
     stealth_profile_path: str = _field("profile.json", group=GROUP, flags=["--stealth-profile"], doc="The stealth profile to use")
+    stealth_no_validate: bool = _field(False, group=GROUP, doc="Skip JSON schema validation. I too like to live dangerously. Note that passing this option does not suppress profile parsing errors, such as missing variables.")
 
     def __post_init__(self):
         self.uploaded_files = {}
@@ -57,7 +59,31 @@ class StealthyUploadMixin:
             sys.exit(1)
 
         self.stealth_profile_str = json.dumps(profile).encode('utf-8')
-        self.stealth_catalogue = make_catalogue_from_profile(profile)
+        
+        if not self.stealth_no_validate:
+            try:
+                import jsonschema
+            except ImportError:
+                self.printerr(f"stealthnet requires the jsonschema package:")
+                self.printerr(f"")
+                self.printerr(f"\tpip install jsonschema")
+                self.printerr(f"")
+                self.printerr(f"If you're not aiming to customise the stealth profile,")
+                self.printerr(f"you can skip validation by passing --stealth-no-validate")
+                sys.exit(1)
+            try:
+                jsonschema.validate(profile, JSON_SCHEMA)
+            except jsonschema.ValidationError as e:
+                self.printerr(f"JSON Schema ValidationError: {e.message}")
+                self.printerr(f"Path to error: {e.json_path}")
+                sys.exit(1)
+
+        try:
+            self.stealth_catalogue = make_catalogue_from_profile(profile)
+            self.stealth_decryptor = make_decryptor_from_profile(profile)
+        except (KeyError, TypeError, JDSLProfileError) as e:
+            self.printerr(f"Error loading profile ({e.__class__.__name__}): {e}")
+            sys.exit(1)
         self.printstatus(f"Loaded profile '{self.stealth_profile_path}', {len(self.stealth_catalogue.requests)} requests")
 
         super().__post_init__()
@@ -117,27 +143,97 @@ class StealthyUploadProcessor:
     def handle_incoming_tx_request(self, req):
         stealth = self.try_extract_payload(req)
         if stealth is None:
-            return
+            return stealth
 
-        self.push_event(req, stealth=stealth)
-        maxRetries = stealth.get("maxRetries", 0)
-        if maxRetries > 0 and random.random() < 0.5:
-            req.send_response(304)
+        try:
+            request = stealth["request"]
+        except KeyError:
+            # 502 is reserved by the server
+            self.printerr(f"expected request key")
+            req.send_response(502)
+            return None
+
+        errh = request.on_action("error")
+        if not errh:
+            self.printerr(f"expected error action")
+            req.send_response(502)
+            return None
+        err_stat = errh["status"]()
+        err_tmpl = errh.get("template", "An error occurred: %s")
+
+        try:
+            bytes_ = stealth["bytes"]
+            currentIndex = stealth["currentIndex"]
+            finalIndex = stealth["finalIndex"]
+            filename = stealth["filename"]
+        except KeyError as e:
+            req.send_response(err_stat, content=err_tmpl % f"missing field {e}")
+            return True
+        if finalIndex <= currentIndex:
+            req.send_response(err_stat, content=err_tmpl % "bad order")
+            return True
+        if len(bytes_) < finalIndex - currentIndex:
+            # The computed length (len(bytes_)) should not be less than the actual length (final - current).
+            # This serves as a simple error detection.
+            # We accept computed len > actual len, because bytes_ could be padded.
+            req.send_response(err_stat, content=err_tmpl % "bad length")
             return True
         
-        if req.path.endswith('.js'):
-            # Randomly generate .js file.
-            content = generate_fake_minified_js()
-            req.send_response(200, content=content, mime='text/javascript')
-        # elif ...
-        # TODO: handle API calls --> return JSON
-        else:
-            req.send_response(200)
+        # Checksum, optional, but recommended.
+        bytes_ = bytes_[:finalIndex - currentIndex]
+        checksum = stealth.get("checksum", None)
+        if checksum is not None and djb2_hash(bytes_) != checksum:
+            req.send_response(err_stat, content=err_tmpl % "bad check")
+            return True
 
-        return True
+        # Decrypt.
+        bytes_ = req.server.stealth_decryptor.decrypt(bytes_, currentIndex)
+        stealth["bytes"] = bytes_
+
+        # Cleanup any missing fields.
+        if "chunkNo" not in stealth:
+            stealth["chunkNo"] = 0
+
+        self.push_event(req, stealth=stealth)
+
+        if action := request.on_action("retry"):
+            retries = stealth.get("retries", 0) # This will keep decreasing based on client-side tracking.
+            if retries > 0 and random.random() < 0.5:
+                req.send_response(action["status"](), content=action.get("template", ""))
+                return True
+        
+        # Fallback: ok
+        if action := request.on_action("ok"):
+            status = action["status"]()
+            tmpl = action.get("template", "")
+            if tmpl == "$fakejs":
+                # Randomly generate .js file.
+                content = generate_fake_minified_js()
+                req.send_response(status, content=content, mime='text/javascript')
+            elif tmpl == "$fakeapi":
+                if random.random() < 0.8:
+                    req.send_json(status, data={
+                        "status": "ok"
+                    })
+                else:
+                    req.send_json(status, data={
+                        "status": "error",
+                        "message": random.choice(["An error occurred", "Internal server error", "Invalid input"])
+                    })
+            else:
+                req.send_response(status)
+
+            return True
+        
+        # Not processed
+        return None
     
     
-    def try_extract_payload(self, req):
+    def try_extract_payload(self, req) -> Union[None, True, dict]:
+        """
+        Attempts to convert an incoming request into the original bytes.
+        Returns None on failure, True on failure + custom response, dict on success.
+        """
         def try_call(f):
             try:
                 return True, f()
@@ -148,23 +244,30 @@ class StealthyUploadProcessor:
         try:
             # In case multiple matches exist, select the one which returns the
             # most bytes. The idea is that multiple matches arise due to vars,
-            # which don't consume but don't return bytes.
-            rs = cat.find(req)
-            self.logger.info(f'{req.requestline} --> matches {len(rs)} / {rs[0]}')
-            runs = [(conv[1], r) for r in rs if (conv := try_call(lambda: r.to_bytes(req)))[0]]
+            # which consume but don't return bytes.
+            requests = cat.find(req)
+            self.logger.info(f'{req.requestline} --> matches {len(requests)} / {requests[0]}')
+            runs = [(conv[1], r) for r in requests if (conv := try_call(lambda: r.to_bytes(req)))[0]]
             
             if len(runs) >= 2:
                 runs.sort(key=lambda x: -len(x[0]))
                 self.logger.info(f'{len(runs)} runs: {[len(r[0]) for r in runs]}')
                 self.logger.info(f'selected: {runs[0][1]}')
             
-            bytes_ = runs[0][0]
+            bytes_, request = runs[0]
             patterns = cat.match_patterns(req)
-            return dict(bytes=bytes_, **patterns)
-        except JDSLProfileError as e:
+            return dict(bytes=bytes_, **patterns, request=request)
+        except (JDSLProfileError, KeyError) as e:
             self.logger.error(f"{e.__class__.__name__}: {e}")
         return None
     
+
+def djb2_hash(data: bytes) -> int:
+    hash_value = 5381
+    for byte in data:
+        hash_value = (((hash_value << 5) & 0xFFFFFFFF) + hash_value) + byte
+        hash_value &= 0xFFFFFFFF
+    return hash_value & 0xFFFFFFFF
 
 DEFAULT_CHAR = b"_"
 WHITELIST = (string.ascii_letters + string.digits + "_-.").encode()
@@ -220,7 +323,86 @@ class StealthBytesEventHandler:
         self.printe(f"{c.CYN}{status:><30}{c.RST}\n")
 
 
-VAR_REGEX = re.compile(r'(\$\{(?:var|uuid|b64|hex)(?::[a-zA-Z0-9]+)?(?::[0-9]+)?\})')
+class ByteRange:
+    def __init__(self, start: int, end: int):
+        self.start = start  # inclusive
+        self.end = end      # exclusive  [start, end)
+
+    def __repr__(self):
+        return f"[{self.start}, {self.end})"
+
+
+class ReceivedRanges:
+    def __init__(self):
+        self.ranges: list[ByteRange] = []  # always sorted, non-overlapping, non-adjacent
+
+    def add(self, start: int, end: int) -> None:
+        """Add a newly received range [start, end) and merge with existing ranges."""
+        if start >= end:
+            return
+
+        new_start = start
+        new_end = end
+
+        merged = []
+        added = False
+
+        for r in self.ranges:
+            if r.end < new_start:
+                # Existing range is completely before the new one
+                merged.append(r)
+            elif r.start > new_end:
+                # Existing range is completely after → insert new one here
+                if not added:
+                    merged.append(ByteRange(new_start, new_end))
+                    added = True
+                merged.append(r)
+            else:
+                # Overlap or adjacent → merge
+                new_start = min(new_start, r.start)
+                new_end = max(new_end, r.end)
+
+        if not added:
+            merged.append(ByteRange(new_start, new_end))
+
+        self.ranges = merged
+
+    def get_missing_ranges(self, total_size: int) -> list[ByteRange]:
+        """Return list of missing ranges up to total_size."""
+        if not self.ranges:
+            return [ByteRange(0, total_size)] if total_size > 0 else []
+
+        missing = []
+        prev_end = 0
+
+        for r in self.ranges:
+            if r.start > prev_end:
+                missing.append(ByteRange(prev_end, r.start))
+            prev_end = r.end
+
+        if prev_end < total_size:
+            missing.append(ByteRange(prev_end, total_size))
+
+        return missing
+
+    def get_received_bytes(self) -> int:
+        """Return total number of bytes successfully received."""
+        return sum(r.end - r.start for r in self.ranges)
+
+    def is_complete(self, total_size: int) -> bool:
+        """Check if the entire file has been received."""
+        if not self.ranges:
+            return total_size == 0
+        return (len(self.ranges) == 1 and
+                self.ranges[0].start == 0 and
+                self.ranges[0].end >= total_size)
+
+    def __repr__(self):
+        return f"ReceivedRanges(ranges={self.ranges})"
+    
+
+VAR_REGEX = re.compile(r'(\$\{(?:\w+)(?::[a-zA-Z0-9]+)?(?::[0-9]+)?\})')
+STRICT_UUID_REGEX = re.compile(r'[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}')
 
 class Token:
     _capture = False
@@ -250,6 +432,17 @@ class UuidToken(Token):
         return binascii.unhexlify(s.replace('-', ''))
 
 @dataclass
+class UuidListToken(Token):
+    _type = "uuidlist"
+    _capture = True
+    _regex = r'\[(?:"|%22)([0-9A-Fa-f\-]{36})(?:"|%22)(?:,(?:"|%22)([0-9A-Fa-f\-]{36})(?:"|%22))*\]'
+
+    @classmethod
+    def to_bytes(cls, s):
+        uuids = STRICT_UUID_REGEX.findall(s)
+        return b''.join(binascii.unhexlify(u.replace('-', '')) for u in uuids)
+
+@dataclass
 class B64Token(Token):
     _type = "b64"
     _capture = True
@@ -269,10 +462,20 @@ class HexToken(Token):
 
     @classmethod
     def to_bytes(cls, s):
+
         return binascii.unhexlify(s)
 
+# @dataclass
+# class AdditionalParamToken(Token):
+#     _capture = True
+#     _regex = r'((&|\?)([0-9A-Za-z_\-]+)=([^\n=&]+))+'
+
+#     @classmethod
+#     def to_bytes(cls, s):
+#         return binascii.unhexlify(s)
+
 def make_token(tag, *args):
-    for cls in [VarToken, UuidToken, B64Token, HexToken]:
+    for cls in [VarToken, UuidToken, B64Token, HexToken, UuidListToken]:
         if cls._type == tag:
             return cls()
     raise JDSLProfileError(f"unknown tag: {tag}({', '.join(args)})")
@@ -354,14 +557,52 @@ class TokenString:
         return m
 
 class Request:
-    def __init__(self, url, *, method="GET", headers=None, body="", **_):
+    def __init__(self, url, *, method="GET", headers={}, body="", on=None, **_):
         self.original = dict(url=url, method=method, headers=headers, body=body)
         self.url = TokenString.build(url)
         self.method = method
         ordered_headers = sorted(headers.items(), key=lambda t: t[0].lower())
         self.headers = {k.lower(): TokenString.build(v) for k, v in ordered_headers}
         self.body = TokenString.build(body)
+        on = on or []
+        self.on_dict = self._build_actions(on)
+        
+    def _build_actions(self, on):
+        on_dict = {}
+        for rule in on:
+            action = rule["action"].lower()
+            on_dict[action] = rule
 
+            status = rule["status"] # Validate key exists
+            if type(status) == int:
+                on_dict[action]["status"] = lambda: status
+            elif type(status) == list and all(type(x) == int for x in status):
+                on_dict[action]["status"] = lambda: random.choice(status)
+            else:
+                raise JDSLProfileError(f"expected on.status to be int or list[int], but got: {status}")
+
+        # Pre-fill default actions.
+        if "ok" not in on_dict:
+            on_dict["ok"] = {
+                "status": lambda: 200,
+                "action": "ok",
+            }
+        if "error" not in on_dict:
+            on_dict["error"] = {
+                "status": lambda: 400,
+                "action": "error",
+                "template": "error: %s"
+            }
+        if "retry" not in on_dict:
+            on_dict["retry"] = {
+                "status": lambda: 429,
+                "action": "retry",
+            }
+        return on_dict
+    
+    def on_action(self, action):
+        return self.on_dict.get(action, None)
+            
     def match(self, req):
         """Attempt to match against an incoming request."""
         return self.method == req.command and self.url.match(req.path)
@@ -412,11 +653,16 @@ class RequestCatalogue:
                     found[pat] = hdr_value
             else:
                 raise JDSLProfileError(f"unknown pattern type: {type_}")
-        if "fnRev" in found:
-            found["filename"] = found["fnRev"][::-1]
-        for x in ["chunkNo", "currentIndex", "finalIndex", "maxRetries"]:
+        
+        # Post-process patterns (type-validation, formatting, etc)
+        if "filename" in found:
+            found["filename"] = found["filename"][::-1]
+        for x in ["chunkNo", "currentIndex", "finalIndex", "retries", "checksum"]:
             if x in found:
-                found[x] = int(found[x])
+                try:
+                    found[x] = int(found[x])
+                except ValueError:
+                    raise JDSLProfileError(f"expected {x} to be integer, but got {found[x]}")
         return found
 
         
@@ -432,6 +678,271 @@ def make_catalogue_from_profile(prof):
             rc.add_request(req)
 
     return rc
+
+class DefaultDecryptor:
+    def decrypt(self, data, index):
+        return data
+
+class XorDecryptor:
+    def __init__(self, key):
+        if isinstance(key, str):
+            self.key = key.encode('utf-8')
+        else:
+            self.key = bytes(key)
+
+    def decrypt(self, data, index):
+        result = bytearray(len(data))
+        for i in range(len(data)):
+            result[i] = data[i] ^ self.key[(index + i) % len(self.key)]
+        return bytes(result)
+
+def make_decryptor_from_profile(prof):
+    enc = prof.get("encryption", None)
+    if not enc:
+        return DefaultDecryptor()
+
+    type_ = enc["type"].lower()
+    if type_ == "xor":
+        key = enc["key"]
+        if type(key) not in (str, bytes):
+            raise TypeError(f"Unexpected type for encryption.key: {type(key)}")
+        if len(key) == 0:
+            raise TypeError(f"Unexpected empty encryption.key")
+        return XorDecryptor(key)
+    else:
+        raise TypeError(f"Unrecognised encryption type: {type_}")
+
+
+# ------------------------------------
+# -- JSON Schema
+# ------------------------------------
+
+JSON_SCHEMA = {
+  "type": "object",
+  "additionalProperties": False,
+
+  "anyOf": [
+    {
+      "required": ["patterns", "cycle"]
+    },
+    {
+      "required": ["patterns", "intermittent"]
+    }
+  ],
+
+  "properties": {
+
+    "metadata": {
+      "type": "object",
+      "required": ["version"],
+      "properties": {
+        "version": {
+          "type": "integer",
+          "description": "Version of the traffic profile"
+        },
+        "description": {
+          "type": "string",
+          "description": "Human-readable purpose or name of this traffic profile"
+        }
+      },
+    },
+
+    "encryption": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["xor"]
+        },
+        "key": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Key used for simple string obfuscation / encryption of payloads"
+        }
+      },
+      "required": ["type"]
+    },
+
+    "patterns": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": ["header"]
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Header name, cookie name, query parameter name, etc."
+          }
+        },
+        "required": ["type", "name"]
+      },
+      "required": ["currentIndex", "finalIndex", "filename"],
+      "propertyNames": {
+        "enum": [
+          "chunkNo",
+          "currentIndex",
+          "finalIndex",
+          "retries",
+          "filename",
+          "checksum"
+        ]
+      },
+      "minProperties": 1
+    },
+
+    "vars": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "type", "items"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[a-zA-Z0-9_]+$"
+          },
+          "type": {
+            "enum": ["cycle", "random"]
+          },
+          "items": {
+            "type": "array",
+            "items": { "type": "string" },
+            "minItems": 1
+          }
+        },
+      }
+    },
+
+    "common": {
+      "type": "object",
+      "additionalProperties": False,
+      "properties": {
+        "headers": {
+          "type": "object",
+          "additionalProperties": { "type": "string" },
+          "description": "Default headers applied to most requests unless overridden"
+        }
+      },
+      "required": ["headers"]
+    },
+
+    "intermittent": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["every", "req"],
+        "properties": {
+          "every": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 2,
+            "items": { "type": "integer", "minimum": 100 },
+            "description": "[minMs, maxMs] interval range"
+          },
+          "req": {
+            "$ref": "#/definitions/request"
+          }
+        }
+      }
+    },
+
+    "cycle": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["count", "delay", "req"],
+        "properties": {
+          "count": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 2,
+            "items": { "type": "integer", "minimum": 0 }
+          },
+          "delay": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 2,
+            "items": { "type": "integer", "minimum": 0 }
+          },
+          "maxRetries": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "req": {
+            "type": "array",
+            "items": { "$ref": "#/definitions/request" }
+          }
+        }
+      }
+    }
+  },
+
+  "definitions": {
+    "request": {
+      "type": "object",
+      "required": ["method", "url"],
+      "properties": {
+        "method": {
+          "enum": ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
+        },
+        "url": {
+          "type": "string",
+          "minLength": 1
+        },
+        "headers": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        },
+        "body": {
+          "type": "string",
+          "minLength": 1
+        },
+        "repeat": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": { "type": "integer", "minimum": 0 }
+        },
+        "on": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["status", "action"],
+            "properties": {
+              "status": {
+                "oneOf": [
+                  {
+                    "type": "integer",
+                    "minimum": 100,
+                    "maximum": 999
+                  },
+                  {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": { "type": "integer", "minimum": 100, "maximum": 999 }
+                  },
+                ]
+              },
+              "action": {
+                "enum": ["ok", "retry", "error"]
+              },
+              "template": {
+                "type": "string",
+                "description": "HTML content to return (special values: $fakejs, $fakeapi)"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
 
 
 
