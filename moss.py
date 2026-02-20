@@ -22,6 +22,7 @@ from pathlib import Path
 from collections import defaultdict
 import time
 from copy import deepcopy
+import gzip
 
 # Extensions
 # try:
@@ -67,6 +68,13 @@ QUEUE_MAX_SIZE = 40
 # Controls the maximum length of the first line of a HTTP request.
 MAX_REQUESTLINE_LENGTH = 8192
 
+# List of static file extensions, which influence whether a file may be gzipped if enabled
+STATIC_FILE_EXTENSIONS = {
+    'text/html', 'text/javascript', 'text/css'
+}
+
+MIN_GZIP_LENGTH = 4000
+
 # Pretty colours!
 class Whatever: pass
 c = Whatever()
@@ -104,6 +112,16 @@ def strip_headers_in_place(headers):
     for k in list(headers.keys()):
         if k.lower() in COMMON_HEADERS:
             del headers[k]
+            
+gzip_cache = {}
+def memoised_gzippy(s: bytes) -> bytes:
+    global gzip_cache
+    h = hash(s)
+    if h in gzip_cache:
+        return gzip_cache[h]
+    compressed = gzip.compress(s)
+    gzip_cache[h] = compressed
+    return compressed
 
 class MossRequestHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
@@ -235,6 +253,10 @@ class MossRequestHandler(BaseHTTPRequestHandler):
         self.send_response_top(code, message)
         self.send_header('Content-Type', mime)
         self.send_header('Content-Length', len(content))
+        if self.server.enable_gzip and "gzip" in self.headers["accept-encoding"] \
+            and len(content) > MIN_GZIP_LENGTH and mime in STATIC_FILE_EXTENSIONS:
+            content = memoised_gzippy(content)
+            self.send_header('Content-Encoding', 'gzip')
         self.end_headers()
         self.wfile.write(content)
 
@@ -581,6 +603,7 @@ class HttpMossServer:
     
     server_header: str = _field("moss (https://github.com/TrebledJ/moss)", group="response", flags=["--server"], doc="Server header in response. Special values: random, none")
     headers: list[str] = _field(list, group="response", flags=["--header", "-H"], doc="Headers to include in server output. You can specify multiple of these, e.g. -H 'Set-Cookie: a=b' -H 'Content-Type: application/json'")
+    enable_gzip: bool = _field(False, group="response", flags=["--gzip"], doc="Enable gzip on static file extensions for lower network latency")
 
     supports_ws: bool = _field(False, group="protocols", flags=["--websockets"], doc="Enable websocket support. Limited support, currently only detects the HTTP handshake")
 
