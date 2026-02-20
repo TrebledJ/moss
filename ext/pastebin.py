@@ -41,6 +41,8 @@ class PastebinMixin:
         return self.pastebin_files.get(id, None)
 
 class PastebinProcessor:
+    BASE64_REGEX = re.compile(r'^[A-Za-z0-9\+/=]+$')
+
     def do_GET(self, req):
         if req.path.strip("/") == req.server.pastebin_path.strip("/"):
             content = PASTEBIN_FORM_HTML.replace(b"{{PATH}}", req.server.pastebin_path.encode("utf-8"))
@@ -79,12 +81,28 @@ class PastebinProcessor:
             while (path is None) or (path in req.server.pastebin_files):
                 path = random_id(6)
 
+        if msg := self.validate_payload(req.body):
+            req.send_json(403, data={
+                "message": msg,
+            })
+            return True
+        
         req.server.pastebin_files[path] = req.body
         req.send_json(201, data={
             "message": "Success!",
             "url": f"{req.server.pastebin_path}/{path}",
         })
         return True
+    
+    def validate_payload(self, body):
+        try:
+            payload = json.loads(body)
+            if payload.keys() - {"iv", "salt", "data"}: raise Exception(f"excessive keys")
+            if not self.BASE64_REGEX.match(payload["iv"]): raise Exception(f"iv is not base64")
+            if not self.BASE64_REGEX.match(payload["salt"]): raise Exception(f"salt is not base64")
+            if not self.BASE64_REGEX.match(payload["data"]): raise Exception(f"data is not base64")
+        except Exception as e:
+            return str(e)
 
 def random_id(n: int):
     return "".join(random.sample("abcdefghijkmnopqrstuvwxyz0123456789", n))
