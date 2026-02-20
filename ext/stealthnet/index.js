@@ -10,13 +10,13 @@ const MAX_DEPTH = 8;
 // able to share the burden of the errored endpoints.
 const IGNORE_ERRORS_WHEN_FAIL_BELOW_RATIO = 0.26;
 
-const PATTERN_NAMES = ['chunkNo', 'currentIndex', 'finalIndex', 'retries', 'filename', 'checksum'];
+const STATE_VARIABLES = ['chunkNo', 'currentIndex', 'finalIndex', 'retries', 'filename', 'checksum'];
 
 const profdata = document.getElementById('profdata').textContent.trim();
 if (!profdata) {
     throw new Error("no profdata available");
 }
-const { encryption, patterns, vars, common, intermittent, cycle } = JSON.parse(profdata);
+const { encryption, vars, common, intermittent, cycle } = JSON.parse(profdata);
 
 function generateRandom(n) {
     const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
@@ -182,11 +182,25 @@ class Sequence {
         this.seq = seq;
     }
 
-    generate(ctx) {
-        let out = "";
+    generate_inner(ctx) {
+        const out = [];
         for (const f of this.seq)
-            out += f.call(ctx);
+            out.push(f.call(ctx));
         return out;
+    }
+    
+    generate(ctx) {
+        // Generation is a two-step process. First, we generate everything inside.
+        // Next, we fill in the state (e.g. index, checksum) once the payload has been embedded.
+        const out = this.generate_inner(ctx);
+        return (state) => out.map(s => {
+            if (typeof s === 'string')
+                return s;
+            else if (typeof s === 'function')
+                return s(state);
+            else
+                throw new Error(`unexpected generated type: ${typeof s}`);
+        }).join('');
     }
 }
 
@@ -194,7 +208,7 @@ class PayloadGenerator {
     constructor({ vgenerator, payloader }) {
         this.vgenerator = vgenerator;
         this.payloader = payloader;
-        this.regex = /(\$\{(?:var|uuid|uuidlist|b64|hex)(?::[a-zA-Z0-9]+)?(?::[0-9]+)?\})/g;
+        this.regex = /(\$\{(?:\w+)(?::[a-zA-Z0-9]+)?(?::[0-9]+)?\})/g;
     }
 
     build(s) {
@@ -225,7 +239,7 @@ class PayloadGenerator {
     }
 
     validateArgs(tag, ...args) {
-        if (tag === 'var') {
+        if (tag === 'var' || tag === 'state') {
             if (args.length !== 1) {
                 return `expected 1 arg, got ${args.length}`;
             } else if (args[0].match(/^\w+$/) === null) {
@@ -257,6 +271,11 @@ class PayloadGenerator {
                 throw new Error(`no such variable: ${args[0]}`)
             }
             return function() { return this.vgenerator.generate(...args) };
+        } else if (tag === 'state') {
+            if (!STATE_VARIABLES.includes(args[0])) {
+                throw new Error(`no such variable: ${args[0]}`)
+            }
+            return () => (state) => state[args[0]];
         } else if (tag === 'uuid') {
             return function() { return this.payloader.nextUuid() };
         } else if (tag === 'uuidlist') {
@@ -394,17 +413,18 @@ class Request {
         const { headers } = common;
         // Sort headers before generating. This is super important to maintain ordering.
         const sortedHeaders = [...headers, ...this.headers].sort(([a, _1], [b, _2]) => a.localeCompare(b, undefined, { sensitivity: 'base' }))
+        
+        const urlPartial = this.url.generate(ctx);
+        const headerPartials = sortedHeaders.map(([k, v]) => [k, v.generate(ctx)]);
+        const bodyPartial = this.body ? this.body.generate(ctx) : (() => undefined);
+
         // Return fetch arguments.
-        return [
-            this.url.generate(ctx),
+        return (state) => [
+            urlPartial(state),
             {
                 method: this.method,
-                headers: Object.fromEntries([
-                    ...sortedHeaders.map(([k, v]) => [k, `${v.generate(ctx)}`]),
-                ]),
-                body: this.body ? this.body.generate(ctx) : undefined,
-                // "mode": "no-cors",
-                // "credentials": "include",
+                headers: Object.fromEntries([...headerPartials.map(([k, v]) => [k, `${v(state)}`])]),
+                body: bodyPartial(state),
             },
         ]
     }
@@ -428,17 +448,6 @@ class IntermittentRequest extends Request {
             throw new Error(`expected lo < hi (intermittent.[].every), got ${lo} > ${hi}`)
         this.every = () => randomLoHi(lo, hi);
     }
-}
-
-function addPattern(url, options, pattern, state) {
-    if (pattern.type === 'header') {
-        if (!pattern.name)
-            throw new Error(`expected pattern.name, got ${pattern}`);
-        options.headers[pattern.name] = state;
-    } else {
-        throw new Error(`unknown pattern type: ${pattern.type}`);
-    }
-    return [url, options];
 }
 
 class SequencedRequest {
@@ -469,10 +478,9 @@ class SequencedRequest {
 }
 
 class Requester {
-    constructor({ payloader, generator, patterns, intermittent, cycle, common, filename, byteOffset, actualLength, depth }) {
+    constructor({ payloader, generator, intermittent, cycle, common, filename, byteOffset, actualLength, depth }) {
         this.payloader = payloader;
         this.generator = generator;
-        this.patterns = patterns;
         this.intermittent = intermittent;
         this.cycle = cycle;
         this.common = common ?? null;
@@ -490,11 +498,12 @@ class Requester {
         this.startIntermittent();
     }
     
-    static make({ payloader, generator, patterns, intermittent, cycle, common, filename }) {
+    static make({ payloader, generator, intermittent, cycle, common, filename }) {
         const _common = { headers: [] };
         if (common) {
             for (const hdr of Object.keys(common.headers)) {
-                _common.headers[hdr] = generator.build(common.headers[hdr]);
+                const [payload, expectedBytes] = generator.build(common.headers[hdr]);
+                _common.headers.push([hdr, payload]);
             }
         }
         if (!intermittent) {
@@ -511,7 +520,6 @@ class Requester {
         return new Requester({
             payloader,
             generator,
-            patterns,
             intermittent,
             cycle,
             common: _common,
@@ -559,16 +567,11 @@ class Requester {
             currentIndex: this.byteOffset + this.payloader.index,
             filename: this.filename.split('').reverse().join(''), // TODO: better opsec
         };
-        let [url, options] = req.generate(this.generator, this.common);
+        // let [url, options] = req.generate(this.generator, this.common);
+        const partial = req.generate(this.generator, this.common);
         state.finalIndex = this.byteOffset + this.payloader.index;
         state.checksum = this.payloader.hash(state.currentIndex - this.byteOffset, state.finalIndex - this.byteOffset);
-
-        // Add state patterns.
-        for (const x of PATTERN_NAMES) {
-            if (this.patterns[x] !== undefined && state[x] !== undefined) {
-                [url, options] = addPattern(url, options, this.patterns[x], state[x]);
-            }
-        }
+        const [url, options] = partial(state);
 
         let actualRetry = 10, backoff = 1000;
         while (--actualRetry) {
@@ -664,7 +667,6 @@ class Requester {
                 vgenerator: this.generator.vgenerator,
                 payloader: resendPayloader,
             }),
-            patterns: this.patterns,
             intermittent: this.intermittent,
             cycle: this.cycle,
             common: this.common,
@@ -942,6 +944,10 @@ async function computeHash(alg, buffer) {
     return hashHex;
 }
 
+function sanitiseFilename(s) {
+    return s.replace(/[^a-zA-Z0-9_.-]/g, '_');
+}
+
 const form = document.getElementsByTagName('form')[0];
 form.addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -951,6 +957,11 @@ form.addEventListener('submit', async (e) => {
     }
     const fileInput = document.getElementById('fileInput');
     const file = fileInput.files[0];
+    if (!file) {
+        window.setStatus("Please select a file.");
+        return;
+    }
+    window.setStatus("");
     
     let buffer = new Uint8Array(await file.arrayBuffer());
     console.log(`loaded ${buffer.length} bytes`)
@@ -970,7 +981,7 @@ form.addEventListener('submit', async (e) => {
     const originalBuffer = buffer;
     if (encryptor) {
         console.log(`encrypting...`);
-        window.setStatus('encrypting...');
+        window.setStatus('Encrypting...');
         nextFrame();
         buffer = encryptor.encrypt(buffer);
         console.log(`encryption done!`);
@@ -987,7 +998,7 @@ form.addEventListener('submit', async (e) => {
     } else {
         fnSplat[0] += '_' + generateRandom(6);
     }
-    const filename = fnSplat.join('.');
+    const filename = sanitiseFilename(fnSplat.join('.'));
 
     if (!window.crypto.subtle) {
         window.updateUploadProgress({ sha1: '(Unable to compute hash, no subtlecrypto, possibly due to unencrypted HTTP connection.)', sha256: '—' })
@@ -998,7 +1009,7 @@ form.addEventListener('submit', async (e) => {
     }
     window.updateUploadProgress({ filename });
 
-    const reqr = Requester.make({ payloader, generator, patterns, intermittent, cycle, common, filename });
+    const reqr = Requester.make({ payloader, generator, intermittent, cycle, common, filename });
     window.activeRequester = reqr;
     nextFrame();
     reqr.loop();

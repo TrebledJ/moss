@@ -42,6 +42,10 @@ def load_file(path):
     with open(path, "rb") as f:
         return json.load(f)
 
+STATE_VARIABLE = ["chunkNo", "currentIndex", "finalIndex", "retries", "filename", "checksum"]
+INT_STATE_VARIABLE = ["chunkNo", "currentIndex", "finalIndex", "retries", "checksum"]
+REQUIRED_STATE_VARIABLES = {"currentIndex", "finalIndex", "filename"}
+
 @dataclass
 class StealthyUploadMixin:
     stealth_path: str = _field("/upload", group=GROUP, doc="HTTP path which accepts upload payloads")
@@ -165,7 +169,7 @@ class StealthyUploadProcessor:
             bytes_ = stealth["bytes"]
             currentIndex = stealth["currentIndex"]
             finalIndex = stealth["finalIndex"]
-            filename = stealth["filename"]
+            _filename = stealth["filename"] # For checking key exists.
         except KeyError as e:
             req.send_response(err_stat, content=err_tmpl % f"missing field {e}")
             return True
@@ -185,6 +189,8 @@ class StealthyUploadProcessor:
         if checksum is not None and djb2_hash(bytes_) != checksum:
             req.send_response(err_stat, content=err_tmpl % "bad check")
             return True
+        if checksum is None:
+            self.logger.warning(f"No checksum found in request, skipping byte validation")
 
         # Decrypt.
         bytes_ = req.server.stealth_decryptor.decrypt(bytes_, currentIndex)
@@ -238,6 +244,7 @@ class StealthyUploadProcessor:
             try:
                 return True, f()
             except JDSLProfileError as e:
+                self.logger.warning(f"while extracting payload: {e}")
                 return False, e
         
         cat = req.server.stealth_catalogue
@@ -247,16 +254,19 @@ class StealthyUploadProcessor:
             # which consume but don't return bytes.
             requests = cat.find(req)
             self.logger.info(f'{req.requestline} --> matches {len(requests)} / {requests[0]}')
-            runs = [(conv[1], r) for r in requests if (conv := try_call(lambda: r.to_bytes(req)))[0]]
-            
-            if len(runs) >= 2:
-                runs.sort(key=lambda x: -len(x[0]))
+            runs = [(conv[1], r) for r in requests if (conv := try_call(lambda: r.parse_request(req)))[0]]
+
+            if len(runs) == 0:
+                raise JDSLProfileError(f"matched {len(requests)} requests via quick-match, but failed to deep-match any requests")
+            elif len(runs) >= 2:
+                # Sort by most bytes, and select the request which can parse the most bytes
+                runs.sort(key=lambda x: -len(x[0][0]))
                 self.logger.info(f'{len(runs)} runs: {[len(r[0]) for r in runs]}')
                 self.logger.info(f'selected: {runs[0][1]}')
+                # TODO: better approach is to probably use the checksum, if available
             
-            bytes_, request = runs[0]
-            patterns = cat.match_patterns(req)
-            return dict(bytes=bytes_, **patterns, request=request)
+            (bytes_, state), request = runs[0]
+            return dict(bytes=bytes_, **state, request=request)
         except (JDSLProfileError, KeyError) as e:
             self.logger.error(f"{e.__class__.__name__}: {e}")
         return None
@@ -323,86 +333,23 @@ class StealthBytesEventHandler:
         self.printe(f"{c.CYN}{status:><30}{c.RST}\n")
 
 
-class ByteRange:
-    def __init__(self, start: int, end: int):
-        self.start = start  # inclusive
-        self.end = end      # exclusive  [start, end)
-
-    def __repr__(self):
-        return f"[{self.start}, {self.end})"
-
-
-class ReceivedRanges:
-    def __init__(self):
-        self.ranges: list[ByteRange] = []  # always sorted, non-overlapping, non-adjacent
-
-    def add(self, start: int, end: int) -> None:
-        """Add a newly received range [start, end) and merge with existing ranges."""
-        if start >= end:
-            return
-
-        new_start = start
-        new_end = end
-
-        merged = []
-        added = False
-
-        for r in self.ranges:
-            if r.end < new_start:
-                # Existing range is completely before the new one
-                merged.append(r)
-            elif r.start > new_end:
-                # Existing range is completely after → insert new one here
-                if not added:
-                    merged.append(ByteRange(new_start, new_end))
-                    added = True
-                merged.append(r)
-            else:
-                # Overlap or adjacent → merge
-                new_start = min(new_start, r.start)
-                new_end = max(new_end, r.end)
-
-        if not added:
-            merged.append(ByteRange(new_start, new_end))
-
-        self.ranges = merged
-
-    def get_missing_ranges(self, total_size: int) -> list[ByteRange]:
-        """Return list of missing ranges up to total_size."""
-        if not self.ranges:
-            return [ByteRange(0, total_size)] if total_size > 0 else []
-
-        missing = []
-        prev_end = 0
-
-        for r in self.ranges:
-            if r.start > prev_end:
-                missing.append(ByteRange(prev_end, r.start))
-            prev_end = r.end
-
-        if prev_end < total_size:
-            missing.append(ByteRange(prev_end, total_size))
-
-        return missing
-
-    def get_received_bytes(self) -> int:
-        """Return total number of bytes successfully received."""
-        return sum(r.end - r.start for r in self.ranges)
-
-    def is_complete(self, total_size: int) -> bool:
-        """Check if the entire file has been received."""
-        if not self.ranges:
-            return total_size == 0
-        return (len(self.ranges) == 1 and
-                self.ranges[0].start == 0 and
-                self.ranges[0].end >= total_size)
-
-    def __repr__(self):
-        return f"ReceivedRanges(ranges={self.ranges})"
-    
-
 VAR_REGEX = re.compile(r'(\$\{(?:\w+)(?::[a-zA-Z0-9]+)?(?::[0-9]+)?\})')
 STRICT_UUID_REGEX = re.compile(r'[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}')
+
+"""-------------
+TOKENS
+------
+You can define your own token formats.
+
+The classes here take care of validating the profile and converting it to bytes.
+
+Mainly, you'll want to define a _tag, _regex, validate(), and to_bytes() members.
+
+- _tag - this is the unique string used to match tokens in a profile, e.g. ${mytag:abc}
+- _regex - this is the regex used to tokenise incoming requests
+- validate() - raises a JDSLProfileError upon invalid profile. This will be run during init.
+- to_bytes() - this parses incoming bytes and does conversion (decryption, if enabled, will be handled later, but not here)
+"""
 
 class Token:
     _capture = False
@@ -410,30 +357,86 @@ class Token:
 @dataclass
 class LiteralToken(Token):
     literal: str
-    _type = "literal"
+    _tag = "literal"
 
     @property
     def _regex(self):
         return escape_regex(self.literal)
 
+class IdArgValidator:
+    @classmethod
+    def validate(cls, *args):
+        if len(args) != 1:
+            raise JDSLProfileError(f"expected 1 arg for {cls.__name__}, got {args}")
+        if not re.match(r'^\w+$', args[0]):
+            raise JDSLProfileError(f"expected identifier-like arg for {cls.__name__}, got {args[0]}")
+
 @dataclass
-class VarToken(Token):
-    _type = "var"
+class VarToken(Token, IdArgValidator):
+    name: str
+    _tag = "var"
     _regex = r'.*'
 
 @dataclass
+class StateToken(Token, IdArgValidator):
+    state_name: str  # The variable name of the state, e.g. "checksum"
+    _tag = "state"
+
+    @property
+    def _regex(self):
+        if self.state_name in INT_STATE_VARIABLE:
+            return r'\d+'
+        else:
+            return r'[0-9A-Za-z\-_\.]+'
+
+    @classmethod
+    def validate(cls, *args):
+        super().validate(*args)
+        if args[0] not in STATE_VARIABLE:
+            raise JDSLProfileError(f"expected state variable to be one of {STATE_VARIABLE}, but got {args[0]}")
+
+    def to_state(self, incoming):
+        # This parses incoming state variables.
+        # If you want to override how states are transferred, you can edit this function.
+        # This should be the only class which defines a `to_state()` method.
+        if self.state_name == "filename":
+            return incoming[::-1]
+        elif self.state_name in INT_STATE_VARIABLE:
+            try:
+                return int(incoming)
+            except ValueError:
+                raise JDSLProfileError(f"expected {self.state_name} to be an integer, but got {incoming}")
+
+@dataclass
 class UuidToken(Token):
-    _type = "uuid"
+    _tag = "uuid"
     _capture = True
     _regex = r'[0-9A-Fa-f\-]{36}'
+
+    @classmethod
+    def validate(cls, *args):
+        if len(args) > 0:
+            raise JDSLProfileError(f"expected 0 args for {cls.__name__}, got {args}")
 
     @classmethod
     def to_bytes(cls, s):
         return binascii.unhexlify(s.replace('-', ''))
 
+class DualIntArgValidator:
+    @classmethod
+    def validate(cls, *args):
+        if not (1 <= len(args) <= 2):
+            raise JDSLProfileError(f"expected 1-2 args for {cls.__name__}, got {args}")
+        if not all(x.isdigit() for x in args):
+            raise JDSLProfileError(f"expected numeric args for {cls.__name__}, got {args}")
+        if len(args) == 2 and int(args[0]) > int(args[1]):
+            raise JDSLProfileError(f"expected arg[0] <= arg[1] for {cls.__name__}, but got {args[0]} > {args[1]}")
+    
 @dataclass
-class UuidListToken(Token):
-    _type = "uuidlist"
+class UuidListToken(Token, DualIntArgValidator):
+    lo: int
+    hi: int = None
+    _tag = "uuidlist"
     _capture = True
     _regex = r'\[(?:"|%22)([0-9A-Fa-f\-]{36})(?:"|%22)(?:,(?:"|%22)([0-9A-Fa-f\-]{36})(?:"|%22))*\]'
 
@@ -443,8 +446,10 @@ class UuidListToken(Token):
         return b''.join(binascii.unhexlify(u.replace('-', '')) for u in uuids)
 
 @dataclass
-class B64Token(Token):
-    _type = "b64"
+class B64Token(Token, DualIntArgValidator):
+    lo: int
+    hi: int = None
+    _tag = "b64"
     _capture = True
     _regex = r'[A-Za-z0-9+/]+'
 
@@ -452,32 +457,26 @@ class B64Token(Token):
     def to_bytes(cls, s):
         if type(s) == str:
             s = s.encode()
-        return base64.b64decode(s + b'===')
+        s = s.replace(b" ", b"+")
+        return base64.b64decode(s + b"===")
 
 @dataclass
-class HexToken(Token):
-    _type = "hex"
+class HexToken(Token, DualIntArgValidator):
+    lo: int
+    hi: int = None
+    _tag = "hex"
     _capture = True
     _regex = r'[0-9A-Fa-f]+'
 
     @classmethod
     def to_bytes(cls, s):
-
         return binascii.unhexlify(s)
 
-# @dataclass
-# class AdditionalParamToken(Token):
-#     _capture = True
-#     _regex = r'((&|\?)([0-9A-Za-z_\-]+)=([^\n=&]+))+'
-
-#     @classmethod
-#     def to_bytes(cls, s):
-#         return binascii.unhexlify(s)
-
 def make_token(tag, *args):
-    for cls in [VarToken, UuidToken, B64Token, HexToken, UuidListToken]:
-        if cls._type == tag:
-            return cls()
+    for cls in [VarToken, StateToken, UuidToken, B64Token, HexToken, UuidListToken]:
+        if cls._tag == tag:
+            cls.validate(*args)
+            return cls(*args)
     raise JDSLProfileError(f"unknown tag: {tag}({', '.join(args)})")
 
 class JDSLProfileError(Exception): pass
@@ -487,25 +486,38 @@ def escape_regex(s):
         s = s.replace(c, '\\' + c)
     return s
 
+@dataclass
+class ByteData:
+    data: bytes
+
+@dataclass
+class StateData:
+    name: str
+    data: Union[int, str]
+
 class TokenString:
-    def __init__(self, tokens):
+    def __init__(self, tokens, states_needed):
         self.tokens = tokens
+        self.states_needed = states_needed
 
     @staticmethod
     def build(s):
+        states_needed = []
         tokens = []
         splat = VAR_REGEX.split(s)
         for x in splat:
             if x.startswith('${'):
                 tag, *args = x[2:-1].split(':')
                 tok = make_token(tag, *args)
-                if tokens and type(tok) == VarToken and (type(tokens[-1]) == VarToken or tok._capture):
+                if tokens and tok._tag != "literal" and tokens[-1]._tag != "literal":
                     # Prevent parsing difficulties later on.
-                    raise JDSLProfileError(f"cannot have two VarTokens in a row (near {x})")
+                    raise JDSLProfileError(f"cannot have two non-literal in a row (near {x}, in {s})")
+                if tok._tag == "state":
+                    states_needed.append(args[0])
                 tokens.append(tok)
             else:
                 tokens.append(LiteralToken(x))
-        return TokenString(tokens)
+        return TokenString(tokens, states_needed)
     
     def parse(self, string):
         original_string = string
@@ -534,9 +546,11 @@ class TokenString:
                 
                 if tok._capture:
                     try:
-                        yield tok.to_bytes(m.group(0))
+                        yield ByteData(tok.to_bytes(m.group(0)))
                     except Exception as e:
                         raise JDSLProfileError(f"error occurred while calling to_bytes on '{m.group(0)}': {e}")
+                elif type(tok) == StateToken:
+                    yield StateData(tok.state_name, tok.to_state(m.group(0)))
         except StopIteration:
             return True # Done!
         
@@ -566,6 +580,13 @@ class Request:
         self.body = TokenString.build(body)
         on = on or []
         self.on_dict = self._build_actions(on)
+        
+        states_needed = []
+        states_needed += self.url.states_needed
+        for v in self.headers.values():
+            states_needed += v.states_needed
+        states_needed += self.body.states_needed
+        self.states_needed = list(set(states_needed))
         
     def _build_actions(self, on):
         on_dict = {}
@@ -607,28 +628,50 @@ class Request:
         """Attempt to match against an incoming request."""
         return self.method == req.command and self.url.match(req.path)
     
-    def to_bytes(self, req):
-        out = b''
-        out += b''.join(self.url.parse(req.path))
-        # The order of parsing headers is important. We base ordering on
-        # alphabetical order. Don't rely on incoming headers as it could be
-        # reordered by the browser or proxies.
-        for k, h in self.headers.items():
-            if v := req.headers.get(k.lower(), None):
-                out += b''.join(h.parse(v))
-        out += b''.join(self.body.parse(req.body.decode(errors='ignore')))
-        return out
+    def parse_request(self, req):
+        def you_shall_yield():
+            yield from self.url.parse(req.path)
+            for k, h in self.headers.items():
+                if v := req.headers.get(k.lower(), None):
+                    yield from h.parse(v)
+            yield from self.body.parse(req.body.decode(errors='ignore'))
+        
+        bytes_, state = b"", {}
+        for datum in you_shall_yield():
+            if type(datum) == ByteData:
+                bytes_ += datum.data
+            elif type(datum) == StateData:
+                state[datum.name] = datum.data
+            else:
+                raise TypeError(f"you idiot sandwich! you made a new internal data type but forgot to implement it here! (no hard feelings)")
     
+        return bytes_, state
+
     def __str__(self):
         return f"Request({self.original['method']} {self.original['url']})"
 
 class RequestCatalogue:
-    def __init__(self, patterns):
+    def __init__(self, common):
         self.requests = []
-        self.patterns = patterns
+        self.common = common
 
     def add_request(self, request):
-        self.requests.append(Request(**request))
+        self.merge_common(request)
+        r = Request(**request)
+        if missing_states := REQUIRED_STATE_VARIABLES - set(r.states_needed):
+            raise JDSLProfileError(f"in request {r}, missing required states: {missing_states}")
+        # TODO: catch invalid variables
+        self.requests.append(r)
+
+    def merge_common(self, request):
+        c_headers = self.common.get("headers", {})
+        r_headers = request.get("headers", {})
+        headers = {}
+        for k, v in c_headers.items():
+            headers[k.lower()] = v
+        for k, v in r_headers.items():
+            headers[k.lower()] = v
+        request["headers"] = headers
 
     def find(self, req):
         candidates = [r for r in self.requests if (m := r.match(req))]
@@ -641,34 +684,8 @@ class RequestCatalogue:
         
         return candidates
         
-    def match_patterns(self, req):
-        found = {}
-        for pat in self.patterns:
-            p = self.patterns[pat]
-            type_ = p.get("type", None)
-            if type_ == "header":
-                hdr_name = p["name"]
-                hdr_value = req.headers[hdr_name]
-                if hdr_value is not None:
-                    found[pat] = hdr_value
-            else:
-                raise JDSLProfileError(f"unknown pattern type: {type_}")
-        
-        # Post-process patterns (type-validation, formatting, etc)
-        if "filename" in found:
-            found["filename"] = found["filename"][::-1]
-        for x in ["chunkNo", "currentIndex", "finalIndex", "retries", "checksum"]:
-            if x in found:
-                try:
-                    found[x] = int(found[x])
-                except ValueError:
-                    raise JDSLProfileError(f"expected {x} to be integer, but got {found[x]}")
-        return found
-
-        
 def make_catalogue_from_profile(prof):
-    rc = RequestCatalogue(prof["patterns"])
-    # prof["common"] # TODO: handle headers parsed by common.headers
+    rc = RequestCatalogue(prof["common"])
     for x in prof.get("intermittent", []):
         req = x["req"]
         rc.add_request(req)
@@ -723,10 +740,10 @@ JSON_SCHEMA = {
 
   "anyOf": [
     {
-      "required": ["patterns", "cycle"]
+      "required": ["cycle"]
     },
     {
-      "required": ["patterns", "intermittent"]
+      "required": ["intermittent"]
     }
   ],
 
@@ -763,38 +780,6 @@ JSON_SCHEMA = {
       "required": ["type"]
     },
 
-    "patterns": {
-      "type": "object",
-      "additionalProperties": {
-        "type": "object",
-        "additionalProperties": False,
-        "properties": {
-          "type": {
-            "type": "string",
-            "enum": ["header"]
-          },
-          "name": {
-            "type": "string",
-            "minLength": 1,
-            "description": "Header name, cookie name, query parameter name, etc."
-          }
-        },
-        "required": ["type", "name"]
-      },
-      "required": ["currentIndex", "finalIndex", "filename"],
-      "propertyNames": {
-        "enum": [
-          "chunkNo",
-          "currentIndex",
-          "finalIndex",
-          "retries",
-          "filename",
-          "checksum"
-        ]
-      },
-      "minProperties": 1
-    },
-
     "vars": {
       "type": "array",
       "items": {
@@ -827,7 +812,6 @@ JSON_SCHEMA = {
           "description": "Default headers applied to most requests unless overridden"
         }
       },
-      "required": ["headers"]
     },
 
     "intermittent": {

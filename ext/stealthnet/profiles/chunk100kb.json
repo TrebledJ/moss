@@ -1,20 +1,7 @@
 {
-    "patterns": {
-        "currentIndex": {
-            "type": "header",
-            "name": "X-Current-Index"
-        },
-        "finalIndex": {
-            "type": "header",
-            "name": "X-Final-Index"
-        },
-        "retries": {
-            "type": "header",
-            "name": "X-Max-Retries"
-        },
-        "filename": {
-            "type": "header",
-            "name": "X-Filename"
+    "common": {
+        "headers": {
+            "x-data": "${state:finalIndex} -> ${state:filename} + ${state:currentIndex} :: ${state:checksum}"
         }
     },
     "cycle": [

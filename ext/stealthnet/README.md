@@ -14,7 +14,7 @@ By default, profiles will be validated against this schema. (You can disable thi
 - **Server**: The MOSS Server
 - **Client**: The browser which you're uploading files from
 - **Variables**: See [Variables](#variables). Some custom strings which can be inserted into requests.
-- **Patterns**: See [Patterns](#patterns). Some upload metadata that we want to include in the request. Some fields are required.
+- **State**: See [State](#state). Metadata sent on each request.
 
 ## Examples
 
@@ -86,6 +86,25 @@ Examples:
 - `${uuid}` - extract 16 bytes of data, then encode it as a UUID
 - `${uuids:10}` - extract 10-UUIDs worth of data, then format it as a JSON array of strings
 - `${var:apipath}` - substitute from the `apipath` variable (see [variables](#variables))
+- `${state:checksum}` - request metadata (see [state](#state))
+
+The numbers in the arguments represent the number of bytes to be extracted before transforming it. So for example, `${b64:6000}` will extract 6000 bytes, then apply Base64 to it. Base64 encoding has a 4-to-3 ratio, so the final string will have 8000 bytes. This is just enough to fit within MOSS server's requestline, which parses up to 8192 bytes by default. (You can change this in moss.py.)
+
+Similarly, hex will have 2-to-1 factor, as each byte is encoded as two hex digits.
+
+<!-- Be careful when writing requests! Due to how regex works, make sure to avoid similar characters before or after the substitution. -->
+
+<!-- 
+For example, this is not good:
+
+```jsonc
+"req": [
+    { "method": "GET", "url": "/api/v1/healthcheck?id=AAA${b64:100:100}BBB" },
+    { "method": "GET", "url": "/api/v1/session?hex=00${hex:100:200}ff" }
+]
+```
+
+In the first requests, `AAA` and `BBB` will be treated as part of the Base64 payload and incorrectly included. -->
 
 ### Status Codes as Directives
 
@@ -177,26 +196,31 @@ For example, suppose a request uses the URL: `/en/home?lang=${var:apipath}`, the
 - `/en/home?lang=value3`
 - `/en/home?lang=value1`
 
-## Patterns
+## State
 
-JSON Path: `$.patterns`
-
-When dealing with chunkified data, we need to send metadata to ensure consistency and integrity. This formatting is described by the patterns field.
+When dealing with chunkified data, we need to send metadata to ensure consistency and integrity. This formatting is described by the state tag.
 
 - `currentIndex` (integer)
 - `finalIndex` (integer)
-- `filename` (string) - some "simple obfuscation" is done for opsec
+- `filename` (string) - used to uniquely identify a file upload, some "simple obfuscation" is done for opsec
 - `checksum` (integer)
 - `chunkNo` (integer) (optional)
 - `retries` (integer) (optional)
 
-```json
-"patterns": {
-    "currentIndex": {
-        "type": "header",
-        "name": "X-RateLimit-No"
-    },
-    ...
+Some states are required: `currentIndex`, `finalIndex`, `filename`.
+
+Note that **each** request must have **all** the required states. You can also add states in `common`.
+
+```jsonc
+"common": {
+    "headers": {
+        "x-name": "${state:filename}"
+    }
+}
+...
+"req": [
+    { "method": "GET", "url": "/api/v1/session?_s=${state:currentIndex}&_t${state:finalIndex}&data=${b64:1234}" },
+]
 ```
 
 ## Encryption
@@ -217,6 +241,8 @@ JSON Path: `$.common`
 
 For common headers which will be included across all requests.
 
+You can also include [substitutions](#substitutions) here.
+
 
 ## Stats-Based Healthcheck
 <a id="statshealth"></a>
@@ -228,17 +254,20 @@ When dealing with errors, we need to consider several cases:
 - How long have we been running the loop?
 - What endpoints are affected?
 - Was the endpoint working before?
+- What if too many errors on the endpoint occurs? It would be best to ignore the endpoint after it fails too many times.
 
 The current implementation is designed based on these different considerations.
 
-When an error occurs which is likely to be caused by a proxy/firewall/DLP solution, the client will call `.queryContinue()` to check whether we should attempt to continue sending. If `true`, we attempt to resend by looping through a subarray of failed data. If `false`, we stop everything and notify the user.
+When an error occurs which is likely to be caused by a proxy/firewall/DLP solution, the client will call `.queryContinue()` to check whether we should attempt to continue sending. If `true`, we attempt to resend by looping through a slice of failed data. If `false`, we stop everything and notify the user.
+
+The reason for this ~~paranoia~~ robustness is due to some bad experiences in the past. Granted, this implementation may complicate further debugging in the future, but I think it is a worthwhile trade-off.
 
 ## Roadmap
 
-- [ ] Support stuffing patterns into cookies, query, and body
-- [ ] Multiple profiles
+- [ ] Better support for parsing/handling cookies
+- [ ] Support multiple profiles without restarting the server
 - [ ] Encrypt/decrypt profiles over the network
-- [ ] Minify JS
+- [ ] Minify/Compress JS
 - [ ] Support stronger encryption, e.g. AES-CTR? Note that there are requirements for the cipher. Currently, encryption is implemented like so: Encryption, one-time, during init; Decryption, multiple times, immediately on arrival. As such, we currently require random access decryption.
 - [ ] Final handshake - automate confirming the filehash, and any necessary error detection. This may be slightly difficult, especially when requests arrive out-of-order.
 - [ ] Defensive programming: prevent multiple requests with the same `(method, url)` tuple.
