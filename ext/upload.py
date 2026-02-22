@@ -3,8 +3,8 @@ ext/upload.py
 
 ---
 
-A simple file upload extension inspired by
-https://github.com/Densaugeo/uploadserver/.
+A simple file upload extension inspired by the well-known uploadserver package
+(https://github.com/Densaugeo/uploadserver/).
 
 For simplicity, this implementation uses the entire POST body (no form data) to
 upload files. As such, only one file can be uploaded at a time.
@@ -50,11 +50,7 @@ class UploadServerMixin:
 class UploadProcessor:
     def do_GET(self, req):
         if req.path == req.server.upload_path:
-            req.send_response(200)
-            req.send_header('Content-Type', 'text/html')
-            req.send_header('Content-Length', len(UPLOAD_FORM_HTML))
-            req.end_headers()
-            req.wfile.write(UPLOAD_FORM_HTML)
+            req.send_response_full(200, content=UPLOAD_FORM_HTML, mime="text/html")
             return True
         
     def do_POST(self, req):
@@ -74,12 +70,7 @@ class UploadProcessor:
             pass
             # Not an error, since we allowed uploads to be stored in file, especially for larger files.
 
-        req.send_response(201)
-        content = b'ok'
-        req.send_header('Content-Type', 'text/plain')
-        req.send_header('Content-Length', len(content))
-        req.end_headers()
-        req.wfile.write(content)
+        req.send_response_full(201, content=b'ok', mime='text/plain')
 
         if not req.server.upload_to:
             return True
@@ -92,6 +83,7 @@ class UploadProcessor:
         try:
             with open(path, "wb") as f:
                 f.write(req.body)
+            self.logger.info(f"Saved {len(req.body)} bytes to {path}")
         except (FileNotFoundError, PermissionError) as e:
             self.printerr(f"Encountered {e.__class__.__name__}: {e}")
             return True
@@ -126,7 +118,7 @@ UPLOAD_FORM_HTML = """
 </head>
 <body>
 <h1>File Upload</h1>
-<form action="upload" method="POST" enctype="multipart/form-data">
+<form action="" method="POST" enctype="multipart/form-data">
 <input id="fileInput" name="files" type="file" multiple />
 <br />
 <br />

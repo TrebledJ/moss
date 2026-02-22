@@ -67,13 +67,11 @@ class AuthProcessor:
     def handle_fallback(self, req):
         auth = req.headers["authorization"]
         if not auth or auth.strip() != req.server.expect_header:
-            req.send_response(401)
-            req.send_header("Content-Type", "text/html")
-            req.send_header("Content-Length", 0)
+            headers = {}
             if req.server.basic_auth:
-                req.send_header("WWW-Authenticate", "Basic realm=\"Protected Area\"")
+                headers["WWW-Authenticate"] = "Basic realm=\"Protected Area\""
             elif req.server.token_auth:
-                req.send_header("WWW-Authenticate", "Bearer realm=\"Protected Area\"")
-            req.end_headers()
+                headers["WWW-Authenticate"] = "Bearer realm=\"Protected Area\""
+            req.send_response_full(401, headers=headers)
             return True
         

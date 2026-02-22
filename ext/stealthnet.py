@@ -109,7 +109,7 @@ class StealthyUploadMixin:
 class StealthyUploadProcessor:
     def do_GET(self, req):
         if req.path == "/favicon.ico":
-            return req.send_response(404) # SHUTUP
+            return req.send_response_full(404) # SHUTUP
         if not req.path.startswith(req.server.stealth_path):
             return self.handle_incoming_tx_request(req)
         
@@ -138,7 +138,7 @@ class StealthyUploadProcessor:
         # TODO: encrypt the profile?
         content = content.replace(b"{{BASE_URL}}", req.server.stealth_path.encode())
         content = content.replace(b"{{PROFILE}}", req.server.stealth_profile_str)
-        req.send_response(200, content=content, mime=mime)
+        req.send_response_full(200, content=content, mime=mime)
         return True
     
     def handle_fallback(self, req):
@@ -154,13 +154,13 @@ class StealthyUploadProcessor:
         except KeyError:
             # 502 is reserved by the server
             self.printerr(f"expected request key")
-            req.send_response(502)
+            req.send_response_full(502)
             return None
 
         errh = request.on_action("error")
         if not errh:
             self.printerr(f"expected error action")
-            req.send_response(502)
+            req.send_response_full(502)
             return None
         err_stat = errh["status"]()
         err_tmpl = errh.get("template", "An error occurred: %s")
@@ -171,23 +171,23 @@ class StealthyUploadProcessor:
             finalIndex = stealth["finalIndex"]
             _filename = stealth["filename"] # For checking key exists.
         except KeyError as e:
-            req.send_response(err_stat, content=err_tmpl % f"missing field {e}")
+            req.send_response_full(err_stat, content=err_tmpl % f"missing field {e}")
             return True
         if finalIndex <= currentIndex:
-            req.send_response(err_stat, content=err_tmpl % "bad order")
+            req.send_response_full(err_stat, content=err_tmpl % "bad order")
             return True
         if len(bytes_) < finalIndex - currentIndex:
             # The computed length (len(bytes_)) should not be less than the actual length (final - current).
             # This serves as a simple error detection.
             # We accept computed len > actual len, because bytes_ could be padded.
-            req.send_response(err_stat, content=err_tmpl % "bad length")
+            req.send_response_full(err_stat, content=err_tmpl % "bad length")
             return True
         
         # Checksum, optional, but recommended.
         bytes_ = bytes_[:finalIndex - currentIndex]
         checksum = stealth.get("checksum", None)
         if checksum is not None and djb2_hash(bytes_) != checksum:
-            req.send_response(err_stat, content=err_tmpl % "bad check")
+            req.send_response_full(err_stat, content=err_tmpl % "bad check")
             return True
         if checksum is None:
             self.logger.warning(f"No checksum found in request, skipping byte validation")
@@ -205,7 +205,7 @@ class StealthyUploadProcessor:
         if action := request.on_action("retry"):
             retries = stealth.get("retries", 0) # This will keep decreasing based on client-side tracking.
             if retries > 0 and random.random() < 0.5:
-                req.send_response(action["status"](), content=action.get("template", ""))
+                req.send_response_full(action["status"](), content=action.get("template", ""))
                 return True
         
         # Fallback: ok
@@ -215,7 +215,7 @@ class StealthyUploadProcessor:
             if tmpl == "$fakejs":
                 # Randomly generate .js file.
                 content = generate_fake_minified_js()
-                req.send_response(status, content=content, mime='text/javascript')
+                req.send_response_full(status, content=content, mime='text/javascript')
             elif tmpl == "$fakeapi":
                 if random.random() < 0.8:
                     req.send_json(status, data={
@@ -227,7 +227,7 @@ class StealthyUploadProcessor:
                         "message": random.choice(["An error occurred", "Internal server error", "Invalid input"])
                     })
             else:
-                req.send_response(status)
+                req.send_response_full(status)
 
             return True
         

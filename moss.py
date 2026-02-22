@@ -218,10 +218,12 @@ class MossRequestHandler(BaseHTTPRequestHandler):
         ready = select.select([self.request], [], [], timeout)
         if not ready[0]:
             self.debug('timed out')
-            self.handle_anomaly(
-                f'connection timed out',
-                tags=['dos'],
-            )
+            # When this method is called in handle_one_request, the timeout here will be
+            # triggered often by browsers. So we disregard this as an anomaly to reduce noise.
+        #     self.handle_anomaly(
+        #         f'connection timed out',
+        #         tags=['dos'],
+        #     )
             raise TimeoutError('connection timed out')
         self.request.setblocking(bl)
 
@@ -238,7 +240,7 @@ class MossRequestHandler(BaseHTTPRequestHandler):
         context.set_alpn_protocols(self.alpn_protocols)
         return context
 
-    def send_response_top(self, code, message=None):
+    def send_response(self, code, message=None):
         self.send_response_only(code, message)
         if self.server.server_header:
             self.send_header('Server', self.server.server_header)
@@ -247,22 +249,24 @@ class MossRequestHandler(BaseHTTPRequestHandler):
 
         self.send_header('Date', self.date_time_string())
 
-    def send_response(self, code, *, message=None, content=b"", mime="text/html"):
+    def send_response_full(self, code, *, message=None, content=b"", mime="text/html; charset=utf-8", headers={}):
         if type(content) == str:
             content = content.encode('utf-8')
-        self.send_response_top(code, message)
+        self.send_response(code, message)
         self.send_header('Content-Type', mime)
         self.send_header('Content-Length', len(content))
         if self.server.enable_gzip and "gzip" in self.headers["accept-encoding"] \
             and len(content) > MIN_GZIP_LENGTH and mime in STATIC_FILE_EXTENSIONS:
             content = memoised_gzippy(content)
             self.send_header('Content-Encoding', 'gzip')
+        for k, v in headers.items():
+            self.send_header(k, v)
         self.end_headers()
         self.wfile.write(content)
 
     def send_json(self, code, *, data):
         content = json.dumps(data).encode()
-        self.send_response(code, content=content, mime="application/json")
+        self.send_response_full(code, content=content, mime="application/json")
 
     def send_error(self, code, message=None, explain=None):
         """Override send_error to report anomalies"""
@@ -270,7 +274,7 @@ class MossRequestHandler(BaseHTTPRequestHandler):
         if explain:
             kwargs["details"] = f"Explanation: {explain}"
         self.handle_anomaly(message, **kwargs)
-        self.send_response_top(code, message)
+        self.send_response(code, message)
         self.send_header("Connection", "close")
         self.end_headers()
 
@@ -958,20 +962,16 @@ class DefaultProcessor:
         return True
 
     def do_HEAD(self, req):
-        req.send_response(200)
-        req.send_header('Content-Length', 0)
-        req.end_headers()
+        req.send_response_full(200)
         return True
 
     def do_OPTIONS(self, req):
         # TODO: ACAO
-        req.send_response(200)
-        req.send_header('Content-Length', 0)
-        req.end_headers()
+        req.send_response_full(200)
         return True
 
     def send_response_body(self, req):
-        req.send_response(self.default_status_code, content=self.default_body, mime=self.default_mime_type)
+        req.send_response_full(self.default_status_code, content=self.default_body, mime=self.default_mime_type)
 
     def send_invalid_method_and_close(self, req):
         req.send_error(405, "Unsupported method (%r)" % req.command)
@@ -1134,6 +1134,10 @@ class FancySchmancyArgumentParser(argparse.ArgumentParser):
         return [first, arg]
 
 def run(ServerClass=HttpMossServer, RequestHandlerClasss=MossRequestHandler):
+    if sys.version_info < (3, 10):
+        printe(f"{CLR_RED}moss requires Python 3.10 or above")
+        sys.exit(1)
+
     # Handle extension flags
     parser = FancySchmancyArgumentParser(
         fromfile_prefix_chars='@',

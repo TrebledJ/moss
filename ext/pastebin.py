@@ -47,19 +47,19 @@ class PastebinProcessor:
         if req.path.strip("/") == req.server.pastebin_path.strip("/"):
             content = PASTEBIN_FORM_HTML.replace(b"{{PATH}}", req.server.pastebin_path.encode("utf-8"))
             content = content.replace(b"{{SAVE_PSWD}}", req.server.pastebin_local_store.encode("utf-8"))
-            req.send_response(200, content=content)
+            req.send_response_full(200, content=content)
             return True
         
         elif match := re.match(rf"^{req.server.pastebin_path}/(\w+)$", req.path):
             id = match.group(1)
             data = req.server.pastebin_files.get(id, None)
             if data is None:
-                req.send_response(404)
+                req.send_response_full(404)
                 return True
             # TODO: make this more secure by enforcing data structure???
             content = PASTEBIN_VIEW_HTML.replace(b"{{PAYLOAD}}", data)
             content = content.replace(b"{{SAVE_PSWD}}", req.server.pastebin_local_store.encode("utf-8"))
-            req.send_response(200, content=content)
+            req.send_response_full(200, content=content)
             return True
         
     def do_POST(self, req):
