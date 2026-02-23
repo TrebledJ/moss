@@ -1,0 +1,137 @@
+{
+    "metadata": {
+        "version": 20260101,
+        "description": "Sample profile."
+    },
+    "encryption": {
+        "type": "xor",
+        "key": "asldf01lk2nlk-EU9J1LJ3R'A-091;,91G[1.DUB81KENHjfog8lkn10)(JGjgoi"
+    },
+    "vars": [
+        {
+            "name": "api",
+            "type": "cycle",
+            "items": [
+                "users",
+                "comments",
+                "posts",
+                "author",
+                "links"
+            ]
+        },
+        {
+            "name": "uiAction",
+            "type": "random",
+            "items": [
+                "click",
+                "hover",
+                "input"
+            ]
+        },
+        {
+            "name": "jsfile",
+            "type": "random",
+            "items": [
+                "index",
+                "index",
+                "index",
+                "main",
+                "app",
+                "core",
+                "post"
+            ]
+        }
+    ],
+    "common": {
+        "headers": {
+            "X-Filename": "${state:filename}",
+            "X-Checksum": "${state:checksum}",
+            "X-Range": "${state:currentIndex} - ${state:finalIndex} / ${state:retries}",
+            "X-Signature": "${b64:200:800}",
+            "X-Authorization": "${b64:800:1200}",
+            "X-Client-Id": "${hex:64}"
+        }
+    },
+    "intermittent": [
+        {
+            "every": [
+                5000,
+                10000
+            ],
+            "req": 
+                {
+                    "method": "POST",
+                    "url": "/api/v2/rum?src=browser",
+                    "headers": {
+                        "Content-Type": "application/json",
+                        "Accept": "application/json"
+                    },
+                    "body": "{\"action\":\"${var:uiAction}\",\"session\":\"${uuid}\",\"elements\":${uuidlist:4:60},\"selectorEncoded\":\"${b64:20000:40000}\"}",
+                    "on": [
+                        { "status": 200, "action": "ok", "template": "$fakeapi" }
+                    ]
+                }
+            
+        }
+    ],
+    "cycle": [
+        {
+            "count": [
+                15,
+                20
+            ],
+            "delay": [
+                100,
+                500
+            ],
+            "maxRetries": 2,
+            "req": [
+                {
+                    "repeat": [
+                        4,
+                        6
+                    ],
+                    "method": "GET",
+                    "url": "/api/v1/${var:api}",
+                    "headers": {},
+                    "on": [
+                        { "status": 200, "action": "ok", "template": "$fakeapi" }
+                    ]
+                },
+                {
+                    "repeat": [
+                        2,
+                        4
+                    ],
+                    "method": "GET",
+                    "url": "/_static/${var:jsfile}.js",
+                    "headers": {
+                        "If-None-Match": "${hex:32:64}"
+                    },
+                    "on": [
+                        { "status": 200, "action": "ok", "template": "$fakejs" }
+                    ]
+                },
+                {
+                    "repeat": [
+                        5,
+                        8
+                    ],
+                    "method": "GET",
+                    "url": "/api/v1/${var:api}?id=${uuid}&query=${b64:400:2000}",
+                    "headers": {}
+                },
+                {
+                    "repeat": [
+                        2,
+                        4
+                    ],
+                    "method": "POST",
+                    "url": "/api/v1/${var:api}",
+                    "headers": {},
+                    "body": "id=${uuid}&signature=${b64:2000:4000}"
+                }
+            ]
+        }
+    ]
+}

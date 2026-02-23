@@ -118,6 +118,9 @@ class StealthyUploadProcessor:
         else:
             file = req.path[len(req.server.stealth_path):].lstrip('/')
         
+        if file not in ["index.html", "index.js"]:
+            return
+        
         folder = Path(__file__).parent / "stealthnet"
         path = folder / file
         try:

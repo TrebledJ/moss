@@ -288,7 +288,7 @@
     [...fileInput.files].forEach(f=>{
       const div = document.createElement('div');
       div.className = 'file-item';
-      div.innerHTML = `<span>${f.name}</span><small>${(f.size/1024).toFixed(1)} KB</small>`;
+      div.innerHTML = `<span>${f.name}</span><small>${formatBytes(f.size)}</small>`;
       fileListEl.appendChild(div);
     });
   }
@@ -299,6 +299,17 @@
     window.setStatus("Cancelled Upload");
   };
 
+  function formatBytes(b) {
+    if (b == null || isNaN(b)) return '—';
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    let size = b;
+    let unitIndex = 0;
+    while (size >= 1024 && unitIndex < units.length - 1) {
+      size /= 1024;
+      unitIndex++;
+    }
+    return size.toFixed(unitIndex === 0 ? 0 : (size < 10 ? 2 : size < 100 ? 1 : 0)) + ' ' + units[unitIndex];
+  };
   // ── Convenience functions for upload logic (call from index.js) ────────────
 
   // Pass an object with any combination of these keys:
@@ -333,18 +344,6 @@
 
     // Bytes transferred / total
     if (loaded !== null || total !== null) {
-      const formatBytes = (b) => {
-        if (b == null || isNaN(b)) return '—';
-        const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-        let size = b;
-        let unitIndex = 0;
-        while (size >= 1024 && unitIndex < units.length - 1) {
-          size /= 1024;
-          unitIndex++;
-        }
-        return size.toFixed(unitIndex === 0 ? 0 : (size < 10 ? 1 : 0)) + ' ' + units[unitIndex];
-      };
-
       bytesTransferred.textContent = formatBytes(loaded);
       bytesTotal.textContent       = formatBytes(total);
     }
