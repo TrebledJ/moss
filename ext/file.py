@@ -11,6 +11,8 @@ This is different from ext/sfile.py in that files are queried from the filesyste
 during the HTTP request rather than during init. This extension also does
 not provide a `serve_file()` API, which would allow scripting/automation
 to customise server responses.
+
+This extension is not intended to be used in conjunction with ext/sfile.py.
 """
 
 from dataclasses import dataclass, field
@@ -34,9 +36,9 @@ def _field(default, group=None, doc="", metadata={}, flags=[], choices=[], **kwa
 
 @dataclass
 class FileServerProcessor:
-    base_path: str = _field("/files", group=GROUP, doc="The HTTP base path to \"put\" static files in. A base path of /static means files can be accessed through http://HOSTNAME:PORT/static")
+    fileserver_base_path: str = _field("/files", group=GROUP, doc="The HTTP base path to \"put\" static files in. A base path of /static means files can be accessed through http://HOSTNAME:PORT/static")
     directory: str = _field(None, group=GROUP, flags=["--directory", "-d"], doc="The local directory to serve files from. Files served from this directory always return status code 200")
-    enable_index: bool = _field(False, group=GROUP, flags=["--index"], doc="Enable an index page listing files within the directory")
+    enable_index: bool = _field(False, group=GROUP, flags=["--file-index"], doc="Enable an index page listing files within the directory")
 
     extensions_map = _encodings_map_default = {
         '.gz': 'application/gzip',
@@ -53,13 +55,16 @@ class FileServerProcessor:
             self.printerr(f"path does not exist: {self.directory}")
             sys.exit(1)
 
-        if not self.base_path.startswith('/'):
-            self.printerr(f"base path does not start with /: {self.base_path}")
+        if not self.fileserver_base_path.startswith('/'):
+            self.printerr(f"base path does not start with /: {self.fileserver_base_path}")
             sys.exit(1)
+
+    def get_services(self, server):
+        return [(server.fileserver_base_path, "files")]
 
     def do_GET(self, req):
         """Serve a GET request."""
-        relpath = self.relative_under_base_path(req.path, self.base_path)
+        relpath = self.relative_under_base_path(req.path, self.fileserver_base_path)
         if relpath is None:
             return
         path = self.translate_path(self.directory, relpath)

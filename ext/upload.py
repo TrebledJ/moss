@@ -48,6 +48,9 @@ class UploadServerMixin:
         return self.uploaded_file.get(file, None)
 
 class UploadProcessor:
+    def get_services(self, server):
+        return [(server.upload_path, "simple upload")]
+    
     def do_GET(self, req):
         if req.path == req.server.upload_path:
             req.send_response_full(200, content=UPLOAD_FORM_HTML, mime="text/html")

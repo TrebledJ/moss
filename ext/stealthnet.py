@@ -107,6 +107,9 @@ class StealthyUploadMixin:
         return self.uploaded_file.get(file, None)
 
 class StealthyUploadProcessor:
+    def get_services(self, server):
+        return [(server.stealth_path, "stealthy upload")]
+    
     def do_GET(self, req):
         if req.path == "/favicon.ico":
             return req.send_response_full(404) # SHUTUP

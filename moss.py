@@ -37,7 +37,7 @@ import gzip
 #     printe('websockets loaded!')
 
 
-__version__ = '1.0'
+__version__ = '0.1.0'
 
 MAX_LENGTH_TO_LOG = 1024
 
@@ -239,6 +239,12 @@ class MossRequestHandler(BaseHTTPRequestHandler):
         context.load_cert_chain(self.certfile, self.keyfile, self.password)
         context.set_alpn_protocols(self.alpn_protocols)
         return context
+
+    def send_header(self, k, v):
+        # Sanitise header value against CRLF injection.
+        # https://github.com/python/cpython/issues/142533
+        v = ''.join(c for c in str(v) if c not in '\n\r')
+        super().send_header(k, v)
 
     def send_response(self, code, message=None):
         self.send_response_only(code, message)
@@ -940,6 +946,7 @@ class DefaultProcessor:
     default_status_code: int = _field(200, group="response", flags=["--status-code", "-S"], doc="The default status code to return")
     default_mime_type: str = _field("text/html", group="response", flags=["--mime-type", "-M"], doc="The default mime type to return")
     default_body: str = _field("", group="response", flags=["--body"], doc="The default content to return. This could be a file, which will be loaded")
+    enable_services_index: bool = _field(False, group="response", flags=["--index"], doc="Enable an index page which lists the services enabled")
 
     def __post_init__(self):
         if b := self.default_body:
@@ -957,8 +964,32 @@ class DefaultProcessor:
         if req.server.supports_ws and (req.proto.endswith("WS") or req.proto.endswith("WSS")):
             # TODO: handle upgrade and listen for ws
             self.send_invalid_method_and_close(req)
+        elif self.enable_services_index and req.path.strip('/') == '':
+            print(req.server.processors)
+            r = []
+            r.append('<!DOCTYPE HTML>')
+            r.append('<html lang="en">')
+            r.append('<head>')
+            r.append('<style type="text/css">\n:root {\ncolor-scheme: light dark;\n}\n</style>')
+            r.append('</head>')
+            r.append(f'<body>\n<h1>Services</h1>')
+            r.append('<hr>\n<ul>\n')
+            for p in req.server.processors:
+                try:
+                    if method := getattr(p, "get_services", None):
+                        services = method(req.server)
+                        for href, description in services:
+                            r.append(f"<li><a href=\"{href}\">{href}</a> - {description}</li>\n")
+                except Exception as e:
+                    self.logger.error(f"exception occurred while getting services: {e}")
+                    self.send_default_response(req)
+                    return True
+            
+            r.append('</ul>\n<hr>\n</body>\n</html>\n')
+            # self.send_response_full(self.)
+            req.send_response_full(200, content=''.join(r), mime='text/html')
         else:
-            self.send_response_body(req)
+            self.send_default_response(req)
         return True
 
     def do_HEAD(self, req):
@@ -970,7 +1001,7 @@ class DefaultProcessor:
         req.send_response_full(200)
         return True
 
-    def send_response_body(self, req):
+    def send_default_response(self, req):
         req.send_response_full(self.default_status_code, content=self.default_body, mime=self.default_mime_type)
 
     def send_invalid_method_and_close(self, req):
@@ -978,7 +1009,7 @@ class DefaultProcessor:
         
     def handle_fallback(self, req):
         if req.command in ["POST", "PATCH", "PUT", "DELETE"]:
-            self.send_response_body(req)
+            self.send_default_response(req)
         else:
             self.send_invalid_method_and_close(req)
         return True
@@ -1162,16 +1193,18 @@ def run(ServerClass=HttpMossServer, RequestHandlerClasss=MossRequestHandler):
         processors += p
         handlers += h
 
-    inject_class_utils(mixins)
-    inject_class_utils(processors)
-    inject_class_utils(handlers)
     processors = wrap_enqueue_mixin(processors)
+    processors = [ProtocolProcessor, EnqueueProcessor, *processors, DefaultProcessor]
     mixins = mixins[::-1] # Reverse so that they are loaded/displayed in the order specified in args
     handlers = [LoggingEventHandler, *handlers]
 
+    inject_class_utils(mixins)
+    inject_class_utils(processors)
+    inject_class_utils(handlers)
+
     @dataclass
     class Server(*mixins, ServerClass):
-        _processors = [ProtocolProcessor, EnqueueProcessor, *processors, DefaultProcessor]
+        _processors = processors
         RequestHandlerClass = RequestHandlerClasss
 
     parser = FancySchmancyArgumentParser(

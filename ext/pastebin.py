@@ -43,6 +43,9 @@ class PastebinMixin:
 class PastebinProcessor:
     BASE64_REGEX = re.compile(r'^[A-Za-z0-9\+/=]+$')
 
+    def get_services(self, server):
+        return [(server.pastebin_path, "pastebin")]
+
     def do_GET(self, req):
         if req.path.strip("/") == req.server.pastebin_path.strip("/"):
             content = PASTEBIN_FORM_HTML.replace(b"{{PATH}}", req.server.pastebin_path.encode("utf-8"))
