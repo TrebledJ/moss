@@ -1133,7 +1133,7 @@ def add_args_from_dataclass(parser, *DataClasses):
                 ordered.append(group)
 
     # Reorder so that groups within the main module show up first.
-    _ordered, ordered = ordered, ['default', 'response', 'matching', 'logging', 'https', 'protocols']
+    _ordered, ordered = ordered, ['default', 'response', 'matching', 'logging', 'https', 'protocols', 'security']
     for o in _ordered:
         if o not in  ordered:
             ordered.append(o)
@@ -1336,6 +1336,8 @@ class MossBuilder:
 
         # Add all CLI args from dataclasses.
         add_args_from_dataclass(parser, self.server, *self.server._processors, *self.server._handlers)
+
+        # Parse!
         namespace = parser.parse_args(self.args)
 
         if namespace.v == 0:
@@ -1394,7 +1396,10 @@ class MossRunner:
             for server in self.servers:
                 server.shutdown()
 
-if __name__ == "__main__":
+def main():
     builder = MossBuilder()
     runner = builder.cli()
     runner.loop()
+
+if __name__ == "__main__":
+    main()

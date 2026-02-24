@@ -49,9 +49,9 @@ def guess_mime_type(path):
 @dataclass
 class SimpleFileServerMixin:
     # You can define your own CLI/API arguments.
-    sfile_base_path: str = _field("/static", group=GROUP, doc="The HTTP base path to \"put\" static files in. A base path of /static means files can be accessed through http://HOSTNAME:PORT/static")
+    fileserver_base_path: str = _field("/files", group=GROUP, doc="The HTTP base path to \"put\" static files in. A base path of /static means files can be accessed through http://HOSTNAME:PORT/static")
     directory: str = _field(None, group=GROUP, flags=["--directory", "-d"], doc="The local directory to serve files from. Files served from this directory always return status code 200")
-    files: dict = _field(dict, cli=False)
+    files: dict = _field(dict, cli=False) # This option won't be treated as a CLI flag.
     # You can access injected utilities such as self.logger, self.printerr, and self.printstatus.
 
     def __post_init__(self):
@@ -61,8 +61,8 @@ class SimpleFileServerMixin:
             self.printerr(f"path does not exist: {self.directory}")
             sys.exit(1)
 
-        if not self.sfile_base_path.startswith('/'):
-            self.printerr(f"base path does not start with /: {self.sfile_base_path}")
+        if not self.fileserver_base_path.startswith('/'):
+            self.printerr(f"fileserver base path does not start with /: {self.fileserver_base_path}")
             sys.exit(1)
 
         # Note: serve_file() and self.files may be used by other mixins prior to this post_init.
@@ -82,7 +82,7 @@ class SimpleFileServerMixin:
         super().__post_init__()
 
     def serve_file(self, filename: str, content: bytes, mime_type: str = "text/html"):
-        filename = os.path.realpath(f"{self.sfile_base_path}/{filename}")
+        filename = os.path.realpath(f"{self.fileserver_base_path}/{filename}")
         if type(content) == str:
             content = content.encode("utf-8")
         self.files[filename] = (mime_type, content)
@@ -93,12 +93,12 @@ class SimpleFileServerProcessor:
     # Processors are responsible for handling requests.
     # You can use this to do your own logging, push your own events, or customise responses to servers.
 
-    sfile_enable_index: bool = _field(False, group=GROUP, flags=["--file-index"], doc="Enable an index page listing files within the directory")
+    enable_file_index: bool = _field(False, group=GROUP, flags=["--file-index"], doc="Enable an index page listing files within the directory")
 
     def get_services(self, server):
         # This is function provides information on the services offered by this processor,
         # used in listing services for the index page.
-        return [(server.sfile_base_path, "files")]
+        return [(server.fileserver_base_path, "files")]
     
     def do_GET(self, req):
         if req.path in req.server.files:
@@ -110,7 +110,7 @@ class SimpleFileServerProcessor:
 
             # Return True to tell dispatch that response is finished!
             return True
-        elif self.sfile_enable_index and req.path.rstrip('/') == req.server.sfile_base_path:
+        elif self.enable_file_index and req.path.rstrip('/') == req.server.fileserver_base_path:
             return self.list_files(req)
 
         # By default, a Python function returns None.
@@ -131,7 +131,7 @@ class SimpleFileServerProcessor:
         r.append(f'<body>\n<h1>{title}</h1>')
         r.append('<hr>\n<ul>\n')
         for file in req.server.files:
-            r.append(f'<li><a href="{file}">{file[len(req.server.sfile_base_path):]}</a></li>\n')
+            r.append(f'<li><a href="{file}">{file[len(req.server.fileserver_base_path):]}</a></li>\n')
 
         r.append('</ul>\n<hr>\n</body>\n</html>\n')
         req.send_response_full(200, content="".join(r), mime="text/html")

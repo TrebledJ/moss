@@ -1,0 +1,23 @@
+[project]
+name = "moss"
+description = "A Modular Offensive Security Server for all your offensive testing."
+dynamic = ["version"]
+keywords = ["oast", "dlp", "exfiltration", "honeypot", "offsec", "offensive security", "pentesting", "bug bounty", "red team"]
+requires-python = ">= 3.10"
+authors = [{name = "TrebledJ"}]
+dependencies = []
+license = { text = "MIT License" }
+readme = "README.md"
+
+[project.optional-dependencies]
+all = ["jsonschema"]
+
+[project.scripts]
+moss = "moss.moss:main"
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.dynamic]
+version = {attr = "moss.moss.__version__"}

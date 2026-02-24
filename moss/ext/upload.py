@@ -16,7 +16,7 @@ import string
 from pathlib import Path
 import random
 
-GROUP = "uploadserver (ext/upload.py)"
+GROUP = "simpleupload (ext/upload.py)"
 
 def _field(default, group=None, doc="", metadata={}, flags=[], choices=[], **kwargs):
     """Simple wrapper to express fields more conveniently."""

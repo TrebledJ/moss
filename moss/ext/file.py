@@ -38,7 +38,7 @@ def _field(default, group=None, doc="", metadata={}, flags=[], choices=[], **kwa
 class FileServerProcessor:
     fileserver_base_path: str = _field("/files", group=GROUP, doc="The HTTP base path to \"put\" static files in. A base path of /static means files can be accessed through http://HOSTNAME:PORT/static")
     directory: str = _field(None, group=GROUP, flags=["--directory", "-d"], doc="The local directory to serve files from. Files served from this directory always return status code 200")
-    enable_index: bool = _field(False, group=GROUP, flags=["--file-index"], doc="Enable an index page listing files within the directory")
+    enable_file_index: bool = _field(False, group=GROUP, flags=["--file-index"], doc="Enable an index page listing files within the directory")
 
     extensions_map = _encodings_map_default = {
         '.gz': 'application/gzip',
@@ -205,7 +205,7 @@ class FileServerProcessor:
         interface the same as for send_head().
 
         """
-        if not self.enable_index:
+        if not self.enable_file_index:
             req.send_error(HTTPStatus.NOT_FOUND, "File not found")
             return
 
