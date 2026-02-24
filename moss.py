@@ -36,8 +36,13 @@ import gzip
 # else:
 #     printe('websockets loaded!')
 
+__version__ = '0.6'
 
-__version__ = '0.1.0'
+__all__ = [
+    'MossRequestHandler', 'HttpMossServer',
+    'ProtocolProcessor', 'EnqueueProcessor', 'DefaultProcessor',
+    'LoggingEventHandler',
+]
 
 MAX_LENGTH_TO_LOG = 1024
 
