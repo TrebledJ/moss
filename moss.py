@@ -42,6 +42,11 @@ __all__ = [
     'MossRequestHandler', 'HttpMossServer',
     'ProtocolProcessor', 'EnqueueProcessor', 'DefaultProcessor',
     'LoggingEventHandler',
+    # Utility classes
+    'MossBuilder', 'MossRunner',
+    # Expose "config variables" to allow modification
+    'logger',
+    'COMMON_HEADERS', 'STATIC_FILE_EXTENSIONS',
 ]
 
 MAX_LENGTH_TO_LOG = 1024
@@ -764,7 +769,7 @@ class EnqueueMixin:
 
 
 @dataclass
-class EnqueueProcessor(EnqueueMixin):
+class EnqueueProcessor:
     """This is a default processor which handles pushing events from RequestHandlers to the main server thread."""
 
     KNOWN_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "CONNECT", "TRACE", "DEBUG", "PRI", *WEBDAV_COMMANDS]
@@ -1168,99 +1173,144 @@ class FancySchmancyArgumentParser(argparse.ArgumentParser):
                 arg = arg[1:-1]
 
         return [first, arg]
+    
+@dataclass
+class MossBuilder:
+    """Utility class to help build a moss server. Inherit and override methods to customise it."""
+    def __init__(self, args=None):
+        if sys.version_info < (3, 10):
+            printe(f"{CLR_RED}moss requires Python 3.10 or above")
+            sys.exit(1)
+        
+        self.mixins = []
+        self.processors = []
+        self.handlers = []
+        self.args = sys.argv[1:] if args is None else args
 
-def run(ServerClass=HttpMossServer, RequestHandlerClasss=MossRequestHandler):
-    if sys.version_info < (3, 10):
-        printe(f"{CLR_RED}moss requires Python 3.10 or above")
-        sys.exit(1)
+    def load_mixin(self, *cls):
+        self.mixins += [*cls]
 
-    # Handle extension flags
-    parser = FancySchmancyArgumentParser(
-        fromfile_prefix_chars='@',
-        add_help=False,
-    )
-    # parser.add_argument("--ext", "-e", type=str, default=[], action='append')
-    parser.add_argument("--ext", "-e", type=str, default=[], nargs='+', action='append')
-    args, rest_args = parser.parse_known_args()
-    exts = [y for x in args.ext for y in x]
+    def load_processor(self, *cls):
+        self.processors += [*cls]
 
-    # Load modules
-    mixins, processors, handlers = [], [], []
-    for ext in exts:
+    def load_handler(self, *cls):
+        self.handlers += [*cls]
+
+    def load_extension(self, ext):
         mod = load_module(ext)
         if mod is None:
             printe(f"{CLR_RED}module not found: {ext}{CLR_RST}")
             sys.exit(1)
         
         m, p, h = find_extension_classes(mod)
-        # printe(f"{CLR_CYN}Loaded module {ext} ({len(m)}:{len(p)}:{len(h)}){CLR_RST}")
-        mixins += m
-        processors += p
-        handlers += h
+        self.mixins += m
+        self.processors += p
+        self.handlers += h
 
-    processors = wrap_enqueue_mixin(processors)
-    processors = [ProtocolProcessor, EnqueueProcessor, *processors, DefaultProcessor]
-    mixins = mixins[::-1] # Reverse so that they are loaded/displayed in the order specified in args
-    handlers = [LoggingEventHandler, *handlers]
-
-    inject_class_utils(mixins)
-    inject_class_utils(processors)
-    inject_class_utils(handlers)
-
-    @dataclass
-    class Server(*mixins, ServerClass):
-        _processors = processors
-        RequestHandlerClass = RequestHandlerClasss
-
-    parser = FancySchmancyArgumentParser(
-        description=f"Simple, modular offensive HTTP server by TrebledJ, v{__version__}",
-        formatter_class=Formatter,
-        fromfile_prefix_chars='@',
-    )
-
-    # Add -e here so that it shows up in help, even though it would be processed before.
-    parser.add_argument("--ext", "-e", type=str, default=[], nargs='+', help="Load extensions (Python files). Works with bash file glob/expansion, e.g. -e ext/{file,upload}.py")
-    parser.add_argument('-v', action='count', default=0, help='Verbosity. -v for INFO, -vv for DEBUG messages.')
-
-    # Add all CLI args from dataclasses.
-    add_args_from_dataclass(parser, Server, *Server._processors, *handlers)
-
-    args = parser.parse_args(rest_args)
-
-    if args.v == 0:
-        logger.setLevel(logging.WARNING)
-    elif args.v == 1:
-        logger.setLevel(logging.INFO)
-    else:
-        logger.setLevel(logging.DEBUG)
-
-    server = Server.from_args(args)
-    handlers = [build_dataclass_from_args(H, args) for H in handlers]
-
-    servers = [server]
-    printe()
-
-    for server in servers:
-        server.serve()
+    def load_extensions_from_args(self):
+        # Handle extension flags
+        parser = FancySchmancyArgumentParser(
+            fromfile_prefix_chars='@',
+            add_help=False,
+        )
+        parser.add_argument("--ext", "-e", type=str, default=[], nargs='+', action='append')
+        args, rest_args = parser.parse_known_args(self.args)
+        exts = [y for x in args.ext for y in x]
+        for ext in exts:
+            self.load_extension(ext)
+        self.args = rest_args
     
-    try:
-        # Poll servers.
-        while True:
-            for server in servers:
-                if (event := server.wait(0.2)) is not None:
-                    for h in handlers:
-                        try:
-                            h.handle_event(event)
-                        except KeyboardInterrupt as e:
-                            raise e
-                        except Exception as e:
-                            printe(f"{CLR_RED}An error occurred while in {h.__class__.__name__} while handling an event: {e}{CLR_RST}")
-                            printe(f"{CLR_RED}Le event: {event}{CLR_RST}")
-                            printe(traceback.format_exc())
-    except KeyboardInterrupt:
-        for server in servers:
-            server.shutdown()
+    def make_server(self, ServerClass=HttpMossServer, RequestHandlerClasss=MossRequestHandler):
+        mixins, processors, handlers = self.mixins, self.processors, self.handlers
+        mixins = mixins[::-1] # Reverse so that they are loaded/displayed in the order given
+        processors = wrap_enqueue_mixin(processors)
+        if DefaultProcessor not in processors:
+            processors.append(DefaultProcessor)
 
+        inject_class_utils(mixins)
+        inject_class_utils(processors)
+        inject_class_utils(handlers)
+
+        @dataclass
+        class Server(*mixins, ServerClass):
+            _processors = processors
+            _handlers = handlers
+            RequestHandlerClass = RequestHandlerClasss
+        self.server = Server
+        return Server
+
+    def parse_args(self):
+        parser = FancySchmancyArgumentParser(
+            description=f"Simple, modular offensive HTTP server by TrebledJ, v{__version__}",
+            formatter_class=Formatter,
+            fromfile_prefix_chars='@',
+        )
+
+        # Add -e here so that it shows up in help, even though it would be processed before.
+        parser.add_argument("--ext", "-e", type=str, default=[], nargs='+', help="Load extensions (Python files). Works with bash file glob/expansion, e.g. -e ext/{file,upload}.py")
+        parser.add_argument('-v', action='count', default=0, help='Verbosity. -v for INFO, -vv for DEBUG messages.')
+
+        # Add all CLI args from dataclasses.
+        add_args_from_dataclass(parser, self.server, *self.server._processors, *self.server._handlers)
+        namespace = parser.parse_args(self.args)
+
+        if namespace.v == 0:
+            logger.setLevel(logging.WARNING)
+        elif namespace.v == 1:
+            logger.setLevel(logging.INFO)
+        else:
+            logger.setLevel(logging.DEBUG)
+        
+        return namespace
+
+    def make_runner(self, namespace):
+        server = self.server.from_args(namespace)
+        handlers = [build_dataclass_from_args(H, namespace) for H in self.server._handlers]
+        return MossRunner([server], handlers)
+    
+    def cli(self, ServerClass=HttpMossServer, RequestHandlerClasss=MossRequestHandler):
+        self.load_processor(ProtocolProcessor, EnqueueProcessor)
+        self.load_handler(LoggingEventHandler)
+        self.load_extensions_from_args()
+        self.make_server(ServerClass, RequestHandlerClasss)
+        
+        namespace = self.parse_args()
+        runner = self.make_runner(namespace)
+        return runner
+
+class MossRunner:
+    """Utility class to help run a moss server."""
+    def __init__(self, servers, handlers):
+        self.servers = servers
+        self.handlers = handlers
+
+    def handle_event(self, event):
+        for h in self.handlers:
+            try:
+                h.handle_event(event)
+            except KeyboardInterrupt as e:
+                raise e
+            except Exception as e:
+                printe(f"{CLR_RED}An error occurred while in {h.__class__.__name__} while handling an event: {e}{CLR_RST}")
+                printe(f"{CLR_RED}Le event: {event}{CLR_RST}")
+                printe(traceback.format_exc())
+
+    def loop(self):
+        for server in self.servers:
+            server.serve()
+        
+        try:
+            # Poll servers.
+            while True:
+                for server in self.servers:
+                    if (event := server.wait(0.2)) is not None:
+                        self.handle_event(event)
+        except KeyboardInterrupt:
+            printe('shutting down...')
+            for server in self.servers:
+                server.shutdown()
 
 if __name__ == "__main__":
-    run()
+    builder = MossBuilder()
+    runner = builder.cli()
+    runner.loop()
