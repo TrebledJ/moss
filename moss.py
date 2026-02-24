@@ -1195,6 +1195,20 @@ def load_module(path):
         return None
     return mod
 
+def load_module_with_retry(path):
+    mod = load_module(path)
+    if mod:
+        return mod
+    
+    path = str(path)
+    if not path.endswith(".py"):
+        path += ".py"
+
+    path = Path(__file__).parent / "ext" / path
+    mod = load_module(path)
+    if mod:
+        return mod
+
 def find_extension_classes(module):
     mixins, processors, handlers = [], [], []
     for name in dir(module):
@@ -1267,7 +1281,7 @@ class MossBuilder:
         self.handlers += [*cls]
 
     def load_extension(self, ext):
-        mod = load_module(ext)
+        mod = load_module_with_retry(ext)
         if mod is None:
             printe(f"{CLR_RED}module not found: {ext}{CLR_RST}")
             sys.exit(1)

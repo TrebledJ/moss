@@ -88,7 +88,7 @@ class StealthyUploadMixin:
         except (KeyError, TypeError, JDSLProfileError) as e:
             self.printerr(f"Error loading profile ({e.__class__.__name__}): {e}")
             sys.exit(1)
-        self.printstatus(f"Loaded profile '{self.stealth_profile_path}', {len(self.stealth_catalogue.requests)} requests")
+        self.printstatus(f"Loaded stealthnet profile '{self.stealth_profile_path}', {len(self.stealth_catalogue.requests)} requests")
 
         super().__post_init__()
 
