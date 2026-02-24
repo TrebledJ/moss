@@ -206,7 +206,7 @@ class StealthyUploadProcessor:
         if "chunkNo" not in stealth:
             stealth["chunkNo"] = 0
 
-        self.push_event(req, stealth=stealth)
+        req.push_event(stealth=stealth)
 
         if action := request.on_action("retry"):
             retries = stealth.get("retries", 0) # This will keep decreasing based on client-side tracking.
@@ -254,28 +254,29 @@ class StealthyUploadProcessor:
                 return False, e
         
         cat = req.server.stealth_catalogue
-        try:
-            # In case multiple matches exist, select the one which returns the
-            # most bytes. The idea is that multiple matches arise due to vars,
-            # which consume but don't return bytes.
-            requests = cat.find(req)
-            self.logger.info(f'{req.requestline} --> matches {len(requests)} / {requests[0]}')
-            runs = [(conv[1], r) for r in requests if (conv := try_call(lambda: r.parse_request(req)))[0]]
+        requests = cat.find(req)
+        if not requests:
+            self.logger.info(f"could not find matching request for incoming request:\n{req.requestline}")
+            return None
 
-            if len(runs) == 0:
-                raise JDSLProfileError(f"matched {len(requests)} requests via quick-match, but failed to deep-match any requests")
-            elif len(runs) >= 2:
-                # Sort by most bytes, and select the request which can parse the most bytes
-                runs.sort(key=lambda x: -len(x[0][0]))
-                self.logger.info(f'{len(runs)} runs: {[len(r[0]) for r in runs]}')
-                self.logger.info(f'selected: {runs[0][1]}')
-                # TODO: better approach is to probably use the checksum, if available
-            
-            (bytes_, state), request = runs[0]
-            return dict(bytes=bytes_, **state, request=request)
-        except (JDSLProfileError, KeyError) as e:
-            self.logger.error(f"{e.__class__.__name__}: {e}")
-        return None
+        self.logger.info(f'{req.requestline} --> matches {len(requests)} / {requests[0]}')
+
+        # In case multiple matches exist, select the one which returns the
+        # most bytes. The idea is that multiple matches arise due to vars,
+        # which consume but don't return bytes.
+        runs = [(conv[1], r) for r in requests if (conv := try_call(lambda: r.parse_request(req)))[0]]
+
+        if len(runs) == 0:
+            raise JDSLProfileError(f"matched {len(requests)} requests via quick-match, but failed to deep-match any requests")
+        elif len(runs) >= 2:
+            # Sort by most bytes, and select the request which can parse the most bytes
+            runs.sort(key=lambda x: -len(x[0][0]))
+            self.logger.info(f'{len(runs)} runs: {[len(r[0]) for r in runs]}')
+            self.logger.info(f'selected: {runs[0][1]}')
+            # TODO: better approach is to probably use the checksum, if available
+        
+        (bytes_, state), request = runs[0]
+        return dict(bytes=bytes_, **state, request=request)
     
 
 def djb2_hash(data: bytes) -> int:
@@ -685,9 +686,6 @@ class RequestCatalogue:
         #     candidates_str = "\n".join(str(r) for r, _ in candidates)
         #     raise JDSLProfileError(f"(confusion) the request could be matched in multiple ways:\nrequest: {req.requestline}\ncandidate matches: {candidates_str}")
 
-        if not candidates:
-            raise JDSLProfileError(f"could not find matching request for incoming request:\n{req.requestline}")
-        
         return candidates
         
 def make_catalogue_from_profile(prof):

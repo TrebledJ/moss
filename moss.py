@@ -23,6 +23,7 @@ from collections import defaultdict
 import time
 from copy import deepcopy
 import gzip
+import math
 
 # Extensions
 # try:
@@ -85,6 +86,10 @@ STATIC_FILE_EXTENSIONS = {
 
 MIN_GZIP_LENGTH = 4000
 
+# Rate limiting.
+MIN_BADNESS_COUNT = 8
+MIN_BADNESS_SCORE = 10.0 
+
 # Pretty colours!
 class Whatever: pass
 c = Whatever()
@@ -133,6 +138,8 @@ def memoised_gzippy(s: bytes) -> bytes:
     gzip_cache[h] = compressed
     return compressed
 
+class InitSuccessError(Exception): pass
+
 class MossRequestHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -143,6 +150,10 @@ class MossRequestHandler(BaseHTTPRequestHandler):
         self.is_ssl = False
         self.is_ws = False
         self.proto = 'TCP'
+
+        self.init_success = False
+        if server.enable_blocking and server.ratelimiter.banned(client_address[0]):
+            return
         
         self.connect_timestamp = self.log_date_time_string()
         self.debug(f"socket opened")
@@ -178,6 +189,7 @@ class MossRequestHandler(BaseHTTPRequestHandler):
         
         if len(bytes_) == 0:
             # testcase: nc $host $port, then ^C
+            # Note: Browsers may sometimes trigger this, possibly to optimise connection handling.
             self.handle_anomaly(
                 f'socket opened, but no incoming bytes (during peek)',
                 tags=['portscan'],
@@ -192,7 +204,7 @@ class MossRequestHandler(BaseHTTPRequestHandler):
                 self.keyfile = server.keyfile
                 self.password = None
                 self.alpn_protocols = ["http/1.1"]
-                self.wait(5)
+                self.wait_for_byte(5)
                 context = self._create_context()
                 try:
                     request = context.wrap_socket(request, server_side=True)
@@ -220,9 +232,10 @@ class MossRequestHandler(BaseHTTPRequestHandler):
                 self.handle_anomaly(f'expected HTTPS only, but got something else', details=bytes_)
                 return
 
+        self.init_success = True
         super().__init__(request, client_address, server)
 
-    def wait(self, timeout):
+    def wait_for_byte(self, timeout):
         bl = self.request.getblocking()
         self.request.setblocking(0) # set non-blocking to use with select
         ready = select.select([self.request], [], [], timeout)
@@ -361,7 +374,7 @@ class MossRequestHandler(BaseHTTPRequestHandler):
         self.debug('handle one request')
         self.request_timestamp = self.log_date_time_string()
         try:
-            self.wait(5)
+            self.wait_for_byte(5)
             self.raw_requestline = self.rfile.readline(MAX_REQUESTLINE_LENGTH + 1)
             self.debug(f'read {len(self.raw_requestline)} bytes')
             if len(self.raw_requestline) > MAX_REQUESTLINE_LENGTH:
@@ -559,11 +572,16 @@ class MossRequestHandler(BaseHTTPRequestHandler):
         #         self.proto = "WSS" if self.is_ssl else "WS"
         #         logger.info('Peeked and detected websocket request.')
         try:
+            if not self.init_success:
+                raise InitSuccessError()
             # if self.is_ws:
             #     self.handle_websocket()
             # else:
             self.debug("handling request...")
             super().handle()
+        except InitSuccessError:
+            # This is just a simple control flow to handle bad init states.
+            pass
         except (ConnectionResetError, BrokenPipeError) as e:
             # Log the reset but don't crash
             self.handle_anomaly(f"TCP socket was opened, but connection reset ({e})")
@@ -597,6 +615,63 @@ class MossRequestHandler(BaseHTTPRequestHandler):
         # We don't want the default log
         pass
 
+    def push_event(self, **kwargs):
+        kwargs = dict(
+            connect_timestamp=getattr(self, 'connect_timestamp', None),
+            request_timestamp=getattr(self, 'request_timestamp', None),
+            proto=getattr(self, 'proto', 'unknown'),
+            event_timestamp=self.log_date_time_string(),
+            client=self.client_address[0], # + ':' + str(self.client_address[1]),
+            **kwargs,
+        )
+        if self.server.queue.full():
+            self.server.queue.put(kwargs, block=True)
+        else:
+            self.server.queue.put(kwargs, block=False)
+
+    def mark_ip_bad(self, weight=1.0):
+        """Mark the IP from this connection as a bad IP.
+        This will accumulate an IP's badness score.
+        When the badness score, reaches a threshold, that IP will be permanently blocked.
+        """
+        if not self.server.enable_blocking:
+            return
+        self.server.ratelimiter.mark(self.client_address[0], weight)
+
+@dataclass
+class BadIP:
+    score: float = 0
+    count: int = 0
+    last_seen: float = field(default_factory=lambda: time.time())
+
+class BadnessRateLimiter:
+    def __init__(self):
+        self.book_of_badness = defaultdict(BadIP)
+
+    def banned(self, ip) -> bool:
+        if ip not in self.book_of_badness:
+            return False
+        stats = self.book_of_badness[ip]
+        return stats.count >= MIN_BADNESS_COUNT and stats.score >= MIN_BADNESS_SCORE
+    
+    def reset(self, ip):
+        b = self.book_of_badness[ip]
+        b.score = 0
+        b.count = 0
+    
+    def mark(self, ip, weight):
+        stats = self.book_of_badness[ip]
+        score = self.score(stats, time.time(), weight)
+        stats.score += score
+        stats.count += 1
+        if self.banned(ip):
+            logger.warning(f"Blocked {ip}")
+
+    def score(self, stats: BadIP, now, weight):
+        elapsed_sec = now - stats.last_seen
+        return 5/math.sqrt(elapsed_sec) * weight
+
+
 def inject_class_utils(clss):
     for cls in clss:
         if not hasattr(cls, "logger"):
@@ -606,13 +681,13 @@ def inject_class_utils(clss):
         cls.printstatus = lambda cls, msg: printe(f"{CLR_CYN}{msg}{CLR_RST}")
         cls.c = c
 
-def wrap_enqueue_mixin(clss):
-    out = []
-    for cls in clss:
-        @dataclass
-        class WrappedClass(EnqueueMixin, cls): pass
-        out.append(WrappedClass)
-    return out
+# def wrap_processor_mixin(clss):
+#     out = []
+#     for cls in clss:
+#         @dataclass
+#         class WrappedClass(CommonProcessorMixin, cls): pass
+#         out.append(WrappedClass)
+#     return out
 
 @dataclass
 class HttpMossServer:
@@ -620,6 +695,7 @@ class HttpMossServer:
     port: int = _field(8000, flags=["--port", "-p"])
     
     RequestHandlerClass = MossRequestHandler
+    RateLimiterClass = BadnessRateLimiter
     
     server_header: str = _field("moss (https://github.com/TrebledJ/moss)", group="response", flags=["--server"], doc="Server header in response. Special values: random, none")
     headers: list[str] = _field(list, group="response", flags=["--header", "-H"], doc="Headers to include in server output. You can specify multiple of these, e.g. -H 'Set-Cookie: a=b' -H 'Content-Type: application/json'")
@@ -635,6 +711,8 @@ class HttpMossServer:
     filter_str: str = _field(None, group="matching", flags=["--filter"], doc="Match request line and body")
     correlation_regex: str = _field('', group="matching", flags=["--correlation", "-r"], doc="Extract correlation ID based on regex, this works independently of the filter")
 
+    enable_blocking: bool = _field(False, group="security", flags=["--block-scanners"], doc="Enables automatic blocking of IPs which behave like scanners. To unblock, restart the server lol")
+
     def __post_init__(self):
         self._validate()
         self.processors = []
@@ -645,6 +723,7 @@ class HttpMossServer:
         for attr, value in params:
             setattr(server, attr, value)
         server.running = False
+        server.ratelimiter = self.RateLimiterClass()
         # super().__post_init__() # No super post init. This class should be last one in a mixin chain.
 
     def _validate(self):
@@ -751,21 +830,9 @@ class ProtocolProcessor:
             req.proto = "WEBDAV/" + req.proto
 
 
-@dataclass
-class EnqueueMixin:
-    def push_event(self, req, **kwargs):
-        kwargs = dict(
-            connect_timestamp=getattr(req, 'connect_timestamp', None),
-            request_timestamp=getattr(req, 'request_timestamp', None),
-            proto=getattr(req, 'proto', 'unknown'),
-            event_timestamp=req.log_date_time_string(),
-            client=req.client_address[0], # + ':' + str(req.client_address[1]),
-            **kwargs,
-        )
-        if req.server.queue.full():
-            req.server.queue.put(kwargs, block=True)
-        else:
-            req.server.queue.put(kwargs, block=False)
+# @dataclass
+# class CommonProcessorMixin:
+#     """This class is used to "add" methods to Processors without the need of importing moss and inheriting anything."""
 
 
 @dataclass
@@ -790,16 +857,14 @@ class EnqueueProcessor:
             kwargs['tags'] = []
         if 'details' not in kwargs:
             kwargs['details'] = ''
-        self.push_event(
-            req,
+        req.push_event(
             anomaly=anomaly,
             **kwargs,
         )
         return True
 
     def push_request_event(self, req):
-        self.push_event(
-            req,
+        req.push_event(
             method=req.command,
             path=req.path,
             headers=req.headers,
@@ -971,10 +1036,7 @@ class DefaultProcessor:
             printe(f"{CLR_CYN}Default response:{CLR_RST} {CLR_GRN}{self.default_status_code} {status_message}{CLR_RST}, {CLR_YLW}{len(self.default_body)} bytes{CLR_RST}")
 
     def do_GET(self, req):
-        if req.server.supports_ws and (req.proto.endswith("WS") or req.proto.endswith("WSS")):
-            # TODO: handle upgrade and listen for ws
-            self.send_invalid_method_and_close(req)
-        elif self.enable_services_index and req.path.strip('/') == '':
+        if self.enable_services_index and req.path.strip('/') == '':
             print(req.server.processors)
             r = []
             r.append('<!DOCTYPE HTML>')
@@ -996,17 +1058,24 @@ class DefaultProcessor:
                     return True
             
             r.append('</ul>\n<hr>\n</body>\n</html>\n')
-            # self.send_response_full(self.)
             req.send_response_full(200, content=''.join(r), mime='text/html')
+            return True
+
+        req.mark_ip_bad()
+        if req.server.supports_ws and (req.proto.endswith("WS") or req.proto.endswith("WSS")):
+            # TODO: handle upgrade and listen for ws
+            self.send_invalid_method_and_close(req)
         else:
             self.send_default_response(req)
         return True
 
     def do_HEAD(self, req):
+        req.mark_ip_bad()
         req.send_response_full(200)
         return True
 
     def do_OPTIONS(self, req):
+        req.mark_ip_bad()
         # TODO: ACAO
         req.send_response_full(200)
         return True
@@ -1018,6 +1087,7 @@ class DefaultProcessor:
         req.send_error(405, "Unsupported method (%r)" % req.command)
         
     def handle_fallback(self, req):
+        req.mark_ip_bad()
         if req.command in ["POST", "PATCH", "PUT", "DELETE"]:
             self.send_default_response(req)
         else:
@@ -1223,7 +1293,7 @@ class MossBuilder:
     def make_server(self, ServerClass=HttpMossServer, RequestHandlerClasss=MossRequestHandler):
         mixins, processors, handlers = self.mixins, self.processors, self.handlers
         mixins = mixins[::-1] # Reverse so that they are loaded/displayed in the order given
-        processors = wrap_enqueue_mixin(processors)
+        # processors = wrap_processor_mixin(processors)
         if DefaultProcessor not in processors:
             processors.append(DefaultProcessor)
 

@@ -105,8 +105,8 @@ class SimpleFileServerProcessor:
             mime_type, content = req.server.files[req.path]
             req.send_response_full(200, content=content, mime=mime_type)
 
-            # Extensions can push their own events. self.push_event will be "injected" into the class when loaded.
-            self.push_event(req, response_message=f"sent file {req.path} with {len(content)} bytes")
+            # Extensions can push their own events. These will be passed to all Handler classes.
+            req.push_event(response_message=f"sent file {req.path} with {len(content)} bytes")
 
             # Return True to tell dispatch that response is finished!
             return True

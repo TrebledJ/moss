@@ -4,6 +4,7 @@ ext/auth.py
 ---
 
 Safeguard your subsequent processors with some simple authentication.
+In the current implementation, auth will be applied to ALL URLs.
 
 NOTE: You SHOULD specify this extension before other extensions which handle
 HTTP response, otherwise they won't be protected by auth!
@@ -67,6 +68,8 @@ class AuthProcessor:
     def handle_fallback(self, req):
         auth = req.headers["authorization"]
         if not auth or auth.strip() != req.server.expect_header:
+            req.mark_ip_bad()
+            
             headers = {}
             if req.server.basic_auth:
                 headers["WWW-Authenticate"] = "Basic realm=\"Protected Area\""
