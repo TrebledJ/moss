@@ -17,7 +17,7 @@ import ssl
 import http.client
 from dataclasses import dataclass, field
 import dataclasses
-import importlib
+import importlib.util
 from pathlib import Path
 from collections import defaultdict
 import time
