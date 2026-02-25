@@ -42,9 +42,11 @@ The general intended use is to host this on a VPS or— in case you're testing a
 
 Additional Perks:
 
-- [x] zero dependencies! (pure Python)^[Zero dependencies... with the exception of   an optional `jsonschema` package used in stealthnet for validating profiles, mainly for the case where you're developing custom profiles.]
+- [x] zero dependencies! (pure Python)[^deps]
 - [x] single Python file (for OAST), easy to setup, easy to configure, easy to hack
 - [x] pretty ANSI colours!
+
+[^deps]: Zero dependencies... with the exception of   an optional `jsonschema` package used in stealthnet for validating profiles, mainly for the case where you're developing custom profiles.
 
 ## Quick Start
 
