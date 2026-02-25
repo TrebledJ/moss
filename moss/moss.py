@@ -37,7 +37,7 @@ import math
 # else:
 #     printe('websockets loaded!')
 
-__version__ = '0.6.0'
+__version__ = '0.6.1'
 
 __all__ = [
     'MossRequestHandler', 'HttpMossServer',
@@ -284,7 +284,7 @@ class MossRequestHandler(BaseHTTPRequestHandler):
         self.send_response(code, message)
         self.send_header('Content-Type', mime)
         self.send_header('Content-Length', len(content))
-        if self.server.enable_gzip and "gzip" in self.headers["accept-encoding"] \
+        if self.server.enable_gzip and "gzip" in self.headers.get("accept-encoding", "") \
             and len(content) > MIN_GZIP_LENGTH and mime in STATIC_FILE_EXTENSIONS:
             content = memoised_gzippy(content)
             self.send_header('Content-Encoding', 'gzip')
@@ -1037,7 +1037,6 @@ class DefaultProcessor:
 
     def do_GET(self, req):
         if self.enable_services_index and req.path.strip('/') == '':
-            print(req.server.processors)
             r = []
             r.append('<!DOCTYPE HTML>')
             r.append('<html lang="en">')
