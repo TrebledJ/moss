@@ -1,6 +1,6 @@
 [project]
 name = "moss"
-description = "A Modular Offensive Security Server for all your offensive testing."
+description = "A modular, multifunctional server for all your offensive security testing."
 dynamic = ["version"]
 keywords = ["oast", "dlp", "exfiltration", "honeypot", "offsec", "offensive security", "pentesting", "bug bounty", "red team"]
 requires-python = ">= 3.10"
@@ -21,3 +21,10 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.dynamic]
 version = {attr = "moss.moss.__version__"}
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["moss*", "*.json"]
+
+[tool.setuptools.package-data]
+"*" = ["*.html", "*.js", "*.json"]

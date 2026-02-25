@@ -36,8 +36,8 @@ def _field(default, group=None, doc="", metadata={}, flags=[], choices=[], **kwa
 
 @dataclass
 class FileServerProcessor:
-    fileserver_base_path: str = _field("/files", group=GROUP, doc="The HTTP base path to \"put\" static files in. A base path of /static means files can be accessed through http://HOSTNAME:PORT/static")
-    directory: str = _field(None, group=GROUP, flags=["--directory", "-d"], doc="The local directory to serve files from. Files served from this directory always return status code 200")
+    fileserver_base_path: str = _field("/files", group=GROUP, flags=["--file-base-path"], doc="The HTTP base path to access files. A base path of /static means files can be accessed through http://HOSTNAME:PORT/static")
+    directory: str = _field(None, group=GROUP, flags=["--file-directory", "-d"], doc="The local directory to serve files from. Files served from this directory always return status code 200")
     enable_file_index: bool = _field(False, group=GROUP, flags=["--file-index"], doc="Enable an index page listing files within the directory")
 
     extensions_map = _encodings_map_default = {
@@ -60,13 +60,14 @@ class FileServerProcessor:
             sys.exit(1)
 
     def get_services(self, server):
-        return [(server.fileserver_base_path, "files")]
+        return [(self.fileserver_base_path, "files")]
 
     def do_GET(self, req):
-        """Serve a GET request."""
+        # Get the relative path from the directory.
         relpath = self.relative_under_base_path(req.path, self.fileserver_base_path)
         if relpath is None:
             return
+        # Sanitise and decode
         path = self.translate_path(self.directory, relpath)
         f = self.send_head(req, path)
         if f:
@@ -77,7 +78,8 @@ class FileServerProcessor:
         return True
 
     def relative_under_base_path(self, path, url_base_path):
-        """Checks if the incoming URL match matches the file server base path.
+        """Checks whether the incoming URL matches the file server base path.
+        If so, return the relative path under.
         For instance, if /static/abc is under /static.
         """
         if url_base_path == '/':
@@ -117,19 +119,6 @@ class FileServerProcessor:
         f = None
         if os.path.isdir(path):
             self.logger.info(f"fileserver: (dir) {path}")
-            parts = urllib.parse.urlsplit(path)
-            if not parts.path.endswith(('/', '%2f', '%2F')):
-            #     # redirect browser - doing basically what apache does
-            #     req.send_response(HTTPStatus.MOVED_PERMANENTLY)
-            #     new_parts = (parts[0], parts[1], parts[2] + '/',
-            #                  parts[3], parts[4])
-            #     new_url = urllib.parse.urlunsplit(new_parts)
-            #     req.send_header("Location", new_url)
-            #     req.send_header("Content-Length", "0")
-            #     req.end_headers()
-                req.send_error(HTTPStatus.NOT_FOUND, "File not found")
-                return None
-            
             for index in "index.html", "index.htm":
                 index = os.path.join(path, index)
                 if os.path.isfile(index):
@@ -240,10 +229,11 @@ class FileServerProcessor:
         for name in list:
             fullname = os.path.join(path, name)
             displayname = linkname = name
+            linkname = req.path.rstrip('/') + '/' + linkname
             # Append / for directories or @ for symbolic links
             if os.path.isdir(fullname):
-                displayname = name + "/"
-                linkname = name + "/"
+                displayname += "/"
+                linkname += "/"
             if os.path.islink(fullname):
                 displayname = name + "@"
                 # Note: a link to a directory displays with @ and links with /

@@ -3,7 +3,7 @@ ext/sfile.py
 
 ---
 
-This is a simple extension which demonstrates a sending files from the local
+This is a simple extension which demonstrates sending files from the local
 file system. Files are scanned and preloaded into memory for safety guarantees
 at the expense of memory.
 
@@ -49,8 +49,8 @@ def guess_mime_type(path):
 @dataclass
 class SimpleFileServerMixin:
     # You can define your own CLI/API arguments.
-    fileserver_base_path: str = _field("/files", group=GROUP, doc="The HTTP base path to \"put\" static files in. A base path of /static means files can be accessed through http://HOSTNAME:PORT/static")
-    directory: str = _field(None, group=GROUP, flags=["--directory", "-d"], doc="The local directory to serve files from. Files served from this directory always return status code 200")
+    fileserver_base_path: str = _field("/files", group=GROUP, flags=["--file-base-path"], doc="The HTTP base path to access files. A base path of /static means files can be accessed through http://HOSTNAME:PORT/static")
+    directory: str = _field(None, group=GROUP, flags=["--file-directory", "-d"], doc="The local directory to serve files from. Files served from this directory always return status code 200")
     files: dict = _field(dict, cli=False) # This option won't be treated as a CLI flag.
     # You can access injected utilities such as self.logger, self.printerr, and self.printstatus.
 

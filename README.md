@@ -1,121 +1,168 @@
 # MOSS (Modular Offensive Security Server)
 
-A multifunctional server for all your offensive testing: OAST, DLP/Exfiltration, Automation, Pastebin, Honeypot. (Sorry, no C2 stuff here. Yet.)
+A multifunctional server for all your offensive security testing: OAST, DLP/Exfiltration, Automation, Pastebin, Honeypot. (Sorry, no C2 stuff here. Yet.)
 
 Cut time during engagements, exams, and bug bounty!
 
 ## Use Cases
 
 - Out-of-Band (OOB) Application Security Testing (OAST) with a focus on HTTP
-    - Blind Attacks (XSS/SQLi/RCE)
     - SSRF
-- Automation and Exploit Development via Programmatic Interface and Structured Output
+    - Blind Attacks (XSS/SQLi/RCE)
+- Automation and Exploit Development via a Programmatic Interface and Structured Output
 - HTTP Honeypots (maybe), with socket-level reporting
+- Additional features provided through extensions:
+    - DLP/Exfiltration
+    - Pastebin
+
+The general intended use is to host this on a VPS or— in case you're testing an internal network— your own machine.
 
 ## Features
 
-- [x] single Python file, easy to setup, easy to configure, easy to hack
-- [x] custom response (status, headers, body)
-- [x] robust matching/filtering
-- [x] extract correlation ID by regex
-- [x] pretty ANSI colours!
+- [x] custom response
+    - [x] status, headers, body
+    - [x] gzip static files to save bandwidth and load stuff faster
+- [x] OAST features
+    - [x] match/filter requests by string
+    - [x] extract correlation ID by regex
 - [x] comprehensive JSONL logging
-- [x] polyglot (supports both HTTP/HTTPS on the same port)
-- [x] log HTTP anomalies (unsupported method, bad version, potential port scan, and more)
+- [x] cool network shenanigans:
+    - [x] polyglot HTTP (supports both HTTP/HTTPS on the same port)
+    - [x] log HTTP anomalies (unsupported method, bad version, potential port scan, and more)
+    - [x] detects HTTP protocol variants (websockets, websockets over SSL, HTTP proxy, HTTP proxy over SSL, HTTPS tunnel proxy) (NOTE: currently only detects, but doesn't parse or follow through on handshakes etc. That is planned for the future.)
 - [x] modular extensions, include what you need
-    - [x] **auth** header (basic, bearer)
     - [x] send notifications to **Discord** webhook on match
-    - [x] in-memory **pastebin**
+    - [x] protect endpoints with **auth** middleware (basic, bearer)
+    - [x] in-memory **pastebin** (with client-side password protection)
+    - [x] robust **stealthy** exfiltration module customisable via a JSON DSL
     - [x] serve local files
     - [x] upload files
-    - [x] stealthy exfiltration module customisable via a JSON DSL
 - [x] store settings in a **config file** to keep your command line clean
-- [x] detects HTTP protocol variants (websockets, websockets over SSL, HTTP proxy, HTTP proxy over SSL, HTTPS tunnel proxy) (NOTE: currently only detects, but doesn't parse or follow through on handshakes etc. That is planned for the future.)
-- [x] block IPs
+- [x] **blocks** nosy scanners to reduce noise
+
+Additional Perks:
+
+- [x] zero dependencies! (pure Python)^[Zero dependencies... with the exception of   an optional `jsonschema` package used in stealthnet for validating profiles, mainly for the case where you're developing custom profiles.]
+- [x] single Python file (for OAST), easy to setup, easy to configure, easy to hack
+- [x] pretty ANSI colours!
 
 ## Quick Start
+
+> [!IMPORTANT]
+> MOSS requires Python 3.10 or above.
+
+### One-File, OAST
 
 ```shell
 wget https://github.com/TrebledJ/moss/blob/main/moss.py
 python3 moss.py
 ```
 
-Done. This spins up a HTTP listener on port 8000 enough for simple OAST testing.
+Done. This spins up a HTTP listener on port 8000, enough for simple OAST.
 
 No hassle. Quick-n-dirty. Simple.
 
----
+### pip
+
+```shell
+pip install git+https://github.com/TrebledJ/moss
+moss -h
+```
+
+This installs MOSS as a Python package, and also conveniently supplies it as a command.
+
+### CheatSheet
 
 You may be interested in these other options:
 
 **Basic**: Custom port
 
 ```shell
-python3 moss.py -p 443 
+moss -p 443 
 ```
 
 **OpSec**: Override the default server header
 
 ```shell
-python3 moss.py --server Apache
+moss --server Apache
 ```
 
 **Basic**: Modify default response status, headers, and body
 
 ```shell
-python3 moss.py --status-code 404 -H 'X-Frame-Options: DENY' --body 'Hello world!'
+moss --status-code 404 -H 'X-Frame-Options: DENY' --body 'Hello world!'
 ```
 
 **Basic**: Filter for specific requests
 
 ```shell
-python3 moss.py --filter /api/v1/callback
+moss --filter /api/v1/callback
 ```
 
 **Basic**: Simple logging (one line per event) and output JSONL
 
 ```shell
-python3 moss.py --simple --jsonl output.jsonl
+moss --simple --jsonl output.jsonl
 ```
 
-**OpSec**: Enable HTTPS polyglot (see [section below](#https-support) for setup)
+**OpSec**: Enable HTTPS polyglot (see the section [HTTPS Support](#https-support) for guidance)
 
 ```shell
-python3 moss.py --https --certfile cert.pem --keyfile key.pem
+moss --https --certfile cert.pem --keyfile key.pem
 ```
 
 **OpSec**: Protect other extensions with auth
 
 ```shell
-python3 moss.py -e ext/auth.py ext/upload.py --basic-auth moss:isawesome
+moss -e auth.py upload.py --basic-auth moss:isawesome
+```
+
+**Ext**: MOSS automatically looks for extensions under the pre-packaged `ext/` folder. You can also leave out the `.py` or load custom extensions!
+
+```shell
+moss -e auth upload mycustomext.py --basic-auth moss:isawesome
 ```
 
 **Ext**: Enable the pastebin extension and access it at `http://127.0.0.1:8000/pastebin`
 
 ```shell
-python3 moss.py -e ext/pastebin.py
+moss -e pastebin
 ```
 
 **Ext**: Enable the upload server extension and access it at `http://127.0.0.1:8000/upload`
 
 ```shell
-python3 moss.py -e ext/upload.py
+moss -e upload
 ```
 
-**Ext**: Enable a file server and access it at `http://127.0.0.1:8000/static/{YOUR_FILE}`
+**Ext**: Enable a file server and access it at `http://127.0.0.1:8000/files/{YOUR_FILE}`
 
 ```shell
-python3 moss.py -e ext/file.py
+moss -e file -d optional/path/to/folder
+```
+
+**Ext**: Enable a file server with an index page:
+
+```shell
+moss -e file --file-index
 ```
 
 **Ext**: Enable Discord notifications on filtered requests
 
 ```shell
-python3 moss.py -e ext/notify.py --filter 'password=' --notify discord --notify-on match --webhook
+moss -e notify --filter 'password=' --notify discord --notify-on match --webhook-url https://discord.com/api/webhooks/.../...
+```
+
+**Ext**: Enable a stealthy upload service and access it at `http://127.0.0.1:8000/sneakers`
+
+```shell
+moss -e stealthnet --file-index
 ```
 
 
 ## Options
+
+Explore a plethora of options!
 
 ```
 usage: moss.py [-h] [--ext EXT [EXT ...]] [-v] [--bind HOST] [--port PORT]
@@ -131,8 +178,8 @@ usage: moss.py [-h] [--ext EXT [EXT ...]] [-v] [--bind HOST] [--port PORT]
                [--pastebin-fixed PASTEBIN_FIXED]
                [--pastebin-max-size PASTEBIN_MAX_SIZE]
                [--pastebin-local-store PASTEBIN_LOCAL_STORE]
-               [--directory DIRECTORY]
-               [--fileserver-base-path FILESERVER_BASE_PATH] [--file-index]
+               [--file-directory DIRECTORY]
+               [--file-base-path FILESERVER_BASE_PATH] [--file-index]
                [--stealth-path STEALTH_PATH]
                [--stealth-profile STEALTH_PROFILE_PATH]
                [--stealth-no-validate] [--stealth-upload-to STEALTH_UPLOAD_TO]
@@ -238,11 +285,11 @@ pastebin (ext/pastebin.py):
                         localStorage key. (default: )
 
 fileserver (ext/sfile.py or ext/file.py):
-  --fileserver-base-path FILESERVER_BASE_PATH
-                        The HTTP base path to "put" static files in. A base
+  --file-base-path FILESERVER_BASE_PATH
+                        The HTTP base path to access files. A base
                         path of /static means files can be accessed through
                         http://HOSTNAME:PORT/static (default: /files)
-  --directory DIRECTORY, -d DIRECTORY
+  --file-directory DIRECTORY, -d DIRECTORY
                         The local directory to serve files from. Files served
                         from this directory always return status code 200
                         (default: None)
@@ -252,7 +299,7 @@ fileserver (ext/sfile.py or ext/file.py):
 stealthyupload (ext/stealthnet.py):
   --stealth-path STEALTH_PATH
                         HTTP path which accepts upload payloads (default:
-                        /upload)
+                        /sneakers)
   --stealth-profile STEALTH_PROFILE_PATH
                         The stealth profile to use (default: profile.json)
   --stealth-no-validate
@@ -294,105 +341,179 @@ notifications (ext/notify.py):
 ```
 
 
-## Extensions
+## Available Extensions
 
-MOSS is designed to be modular and extensible. Extension modules can be scripted in vanilla[^vanilla] Python to extend MOSS's CLI/API.
+The `ext/` folder contains several extensions which double as examples to get you started on extension development.
 
-[^vanilla]: Vanilla, in this case, means code written purely with built-in Python modules, without the need to download additional modules or to import this project itself (i.e. no `import moss` is needed in extensions).
+- `ext/auth.py` - Safeguard your subsequent processors with some simple authentication middleware.
 
-(TODO: Diagram)
-
-Extensions can declare classes to introduce new behaviour, HTTP processing, and event handling to MOSS. Classes named with these suffixes will be loaded:
-
-- `*Mixin`: This extends the `HttpMossServer` class by exposing new APIs for automation and adds new fields to `req.server`. For instance, `ext/file.py` adds a `serve_file()` method, allowing you to dynamically serve a file, such as an XXE payload.
-- `*Processor`: This processes requests, ideal for modifying request attributes and customising HTTP responses.
-- `*Handler`: This handles events within a single thread. Examples of events are incoming requests, anomalies, or user-defined JSON. Useful for writing to files, logging, notifications, etc.
-
-If none of this suits you, you could consider inheriting existing classes such as `MossRequestHandler` and override methods for further customisation.
-
-### Available Extensions
-
-The `ext/` folder contians several extensions which double as examples to get you started on extension development.
-
-- `ext/auth.py` - Safeguard your subsequent processors with some simple authentication.
-    NOTE: You SHOULD specify this extension before other extensions which handle
-    HTTP response, otherwise they won't be protected by auth!
-
-    For instance, `-e auth.py upload.py` will protect your upload endpoint with auth.
-    But `-e upload.py auth.py` will evaluate your upload endpoint first, and auth second.
+    > [!CAUTION]
+    > Note: You MUST specify this extension **before** the extensions you want to protect.
+    > For instance, `-e auth upload` will protect your upload endpoint with auth.
+    > But `-e upload auth` will not.
+    
     You can also take advantage of this "ordering" feature to expose unauthenticated features.
-- `ext/file.py` - This is a simple extension which demonstrates a sending files from the local
+
+- `ext/sfile.py` - This is a simple extension which demonstrates sending files from the local
     file system. Files are scanned and preloaded into memory for safety guarantees
     at the expense of memory.
+- `ext/file.py` - File server, inspired by Python's built-in `http.server`
 - `ext/upload.py` - Simple upload server inspired by the classic [uploadserver](https://github.com/Densaugeo/uploadserver/) package.
-- `ext/notify.py` - Third-party webhook notifications, allowing basic filtering by event type (match, correlated, anomalies). Currently only supports Discord.
+- `ext/notify.py` - Third-party webhook notifications, allowing basic filtering by event type. Currently only supports Discord.
 - `ext/pastebin.py` - Encrypted pastebin service.
 - `ext/stealthnet.py` - Stealthy upload service with a customisable profile
 
 PRs are also welcome to contribute new extensions.
 
-### Extension Template
+## Pastebin
 
-Here is a simple template to get you started:
+Recommended Command:
 
-```python
-from dataclasses import dataclass, field
-
-def _field(default, group=None, doc="", metadata={}, flags=[], choices=[], **kwargs):
-    """Simple wrapper to express fields more conveniently."""
-    dwargs = {}
-    if type(default).__name__ in ['function', 'type']:
-        dwargs["default_factory"] = default
-    else:
-        dwargs["default"] = default
-    return field(**dwargs, metadata=metadata | dict(group=group, doc=doc, flags=flags, choices=choices, **kwargs))
-
-@dataclass
-class MyServerMixin:
-    # You can define your own CLI/API arguments.
-    # These will also be accessible by the processor in the req.server field.
-    my_arg: str = _field("default_value", group="my-arg-group", doc="This is printed with the CLI help command.")
-    my_arg2: bool = _field(True, group="my-arg-group", flags=["--custom-flags", "-f"], doc="More documentation wouldn't hurt")
-
-    def __post_init__(self):
-        # This is where you handle init, validate args, etc.
-
-        if not self.my_arg:
-            self.printerr(f"my_arg should have something")
-            sys.exit(1)
-        
-        # Make sure to call super post init so that other mixins also handle init!
-        super().__post_init__()
-
-    def my_new_server_method(self):
-        # Extend the server's API with this method.
-        pass
-
-@dataclass
-class MyProcessor:
-    my_arg3: int = _field(100, group="my-arg-group", doc="You can also declare arguments in processors!")
-
-    # Processors are responsible for handling requests.
-    # You can use this to do your own logging, push your own events, or customise responses to servers.
-    def do_GET(self, req):
-        if req.server.my_arg in req.requestline:
-            # Customise the response to this request.  
-            req.send_response(301)
-            req.send_header('Location', 'https://up-your-butt.com/')
-            req.end_headers()
-            req.wfile.write('Hello world!')
-
-            # Extensions can push their own events. These will be passed to all Handler classes.
-            req.push_event(my_parameter="abc")
-
-            # Return True to tell dispatch that response is finished!
-            return True
-
-    def handle_fallback(self, req):
-        # If no do_METHOD function was found for a processor, it will fallback to... you guessed it! handle_fallback()
-        pass
-        
+```shell
+moss -e auth pastebin \
+    --basic-auth your:password \
+    --simple --server random \
+    --https --certfile ... --keyfile ...
 ```
+
+<!-- TODO: screen record -->
+
+Using the `pastebin` extension with `auth` provides two layers of password protection.
+
+1. The first layer (`auth` module) is to protect against unauthorised access to the `/pastebin` URL.
+2. The second layer (`pastebin` client-side password) is to protect against MITM whether it's malicious or blue team.
+    
+    By using a password which is not sent across the network, we ensure that eavesdroppers don't have access to the data. Of course, this only holds if the pastebin password is different from the auth password.
+
+    This is important even when HTTPS is enabled. If you're in a red team engagement exfiltrating from a victim corporate machine, that machine will likely have a corporate certificate installed so that it can proxy all web traffic through servers for DLP and safety inspection. Let me rephrase... Even in HTTPS, traffic can still be decrypted by interested parties who hold the certificates. There is also the possibility of a [compromised/malicious CA](https://sslmate.com/resources/certificate_authority_failures) intercepting data.
+
+## Stealthy Upload (StealthNet)
+
+Recommended Command:
+
+```shell
+moss -e auth stealthnet file \
+    --basic-auth your:password \
+    --index --file-index -d dest \
+    --profile profile.json \
+    --simple --server random \
+    --https --certfile ... --keyfile ...
+```
+
+<!-- TODO: screen record -->
+
+Stealthnet is the working title of a stealthy upload module, which may come in handy for bypassing DLP restrictions, at the cost of slower upload speed. The file is broken down into multiple chunks, encoded, inserted into various parts of a HTTP request, then reassembled on the server. Larger files are broken down and sent separately across multiple requests.
+
+The traffic is customisable by defining a *profile* using a JSON DSL (domain-specific language). The profile will be understood by both the frontend and backend, providing a common interface to specify requests and headers.
+
+Some use cases:
+- Deliver large files by chunking and using minimal delay
+- Mimic and blend in with existing web traffic for stealthier exfiltration
+
+MOSS pre-packages several profiles, which can be specified via `--profile FILE`:
+
+- `profile.json` - default, resembles a web app with an API
+- `chunk5kbget.json` - sends 5 KB per GET request, minimal delay
+- `chunk100kb.json` - sends 100 KB per POST request, minimal delay
+
+More details can be found in [ext/stealthnet/README.md](ext/stealthnet/README.md).
+
+Sample profile:
+
+```jsonc
+{
+    "metadata": {
+        // Profile metadata goes here.
+        "version": 20260101,
+        "description": "Sample profile."
+    },
+    "encryption": {
+        // Encrypt the data before sending. Currently only XOR encryption is offerred.
+        "type": "xor",
+        "key": "asldf01lk2nlk-EU9J1LJ3R'A-091;,91G[1.DUB81KENHjfog8lkn10)(JGjgoi"
+    },
+    "vars": [
+        // Define variables to be substituted into requests.
+        {
+            "name": "api",
+            "type": "cycle",
+            "items": [
+                "users",
+                "comments",
+                "posts",
+                "author",
+                "links"
+            ]
+        }
+    ],
+    "common": {
+        // Define common headers here.
+        "headers": {
+            // State metadata (e.g. the index of the current chunk) can be substituted.
+            // The server intelligently parses out the embedded substitutions.
+            "X-Filename": "asdf${state:filename}vbnm",
+            "X-Checksum": "${state:checksum}",
+            "X-Range": "${state:currentIndex} - ${state:finalIndex} / ${state:retries}",
+            // Common headers can also include data substitutions.
+            // The server will automatically convert encoded data back to its original form.
+            "X-Data": "${b64:400}"
+        }
+    },
+    "intermittent": [
+        // Requests here fire every X seconds.
+        {
+            "every": [
+                5000,
+                10000
+            ],
+            "req": 
+                {
+                    "method": "POST",
+                    "url": "/telemetry",
+                    "headers": {
+                        "Content-Type": "application/json",
+                        "Accept": "application/json"
+                    },
+                    "body": "{\"action\":\"${var:uiAction}\",\"events\":\"${b64:20000:40000}\"}"
+                }
+            
+        }
+    ],
+    "cycle": [
+        // Requests here will fire sequentially.
+        // You can specify a custom random delay between requests.
+        {
+            "count": [1, 1],
+            "delay": [100, 500],
+            "req": [
+                {
+                    "repeat": [4, 6],
+                    "method": "GET",
+                    "url": "/api/v1/${var:api}"
+                },
+                // ...
+            ]
+        }
+    ]
+}
+```
+
+## Notifications
+
+Recommended Command:
+
+```shell
+moss -e notify \
+    --filter youroastfilter \
+    --notify discord --notify-on match \
+    --webhook-url https://discord.com/api/webhooks/.../... \
+    --server random \
+    --https --certfile ... --keyfile ...
+```
+
+<!-- TODO: screen record -->
+
+(Will add more documentation in the future)
 
 
 ## HTTPS Support
@@ -415,6 +536,26 @@ Then run like so:
 moss.py --https --certfile /etc/letsencrypt/live/your.domain.com/fullchain.pem --keyfile /etc/letsencrypt/live/your.domain.com/privkey.pem
 ```
 
+
+## Extensions
+
+MOSS is designed to be modular and extensible. Extension modules can be scripted in vanilla[^vanilla] Python to extend MOSS's CLI/API.
+
+[^vanilla]: Vanilla, in this case, means code written purely with built-in Python modules, without the need to download additional modules or to import this project itself (i.e. no `import moss` is needed in extensions).
+
+### Writing Extensions
+
+(TODO: Diagram)
+
+Extensions can declare classes to introduce new behaviour, HTTP processing, and event handling to MOSS. Classes named with these suffixes will be loaded:
+
+- `*Mixin`: This extends the `HttpMossServer` class by exposing new APIs for automation and adds new fields to `req.server`. For instance, `ext/file.py` adds a `serve_file()` method, allowing you to dynamically serve a file, such as an XXE payload.
+- `*Processor`: This processes requests, ideal for modifying request attributes and customising HTTP responses.
+- `*Handler`: This handles events within a single thread. Examples of events are incoming requests, anomalies, or user-defined JSON. Useful for writing to files, logging, notifications, etc.
+
+If none of this suits you, you could consider inheriting existing classes such as `MossRequestHandler` and override methods for further customisation.
+
+
 ## Programmatic API
 
 For your custom scripts and automation ventures.
@@ -428,25 +569,19 @@ TODO
 
 Async API is in the works.
 
-## StealthNet
-
-Stealthnet is the working title of a stealthy upload module, which may come in handy for bypassing DLP restrictions, albeit at a slower upload speed. The file is broken down into multiple chunks, inserted into various parts of a HTTP request, then reassembled on the server. Larger files are broken down and sent separately across multiple requests.
-
-The traffic is customisable by defining a *profile* using a JSON DSL (domain-specific language). The profile will be understood by both the frontend and backend, providing a common interface to specify the requests, headers, rate, and delays to use.
-
-Some use cases:
-- Deliver large files by chunking and using minimal delay
-- Mimic and blend in with existing web traffic for stealthier exfiltration
-
-## Motivation
+<!-- ## Motivation
 
 My first draft was made in the middle of an exam, and I specifically wanted the OAST server to be controllable programmatically. That is, I run the script, and it will handle servers, craft payloads, and extract exfiltrated credentials within a single script. Later on I did a rewrite when I realised I wanted to handle the scale of hundreds of requests.
 
 Core functionality such as OAST and logging are kept as a single file so that it is easy to download and copy around without having to wrestle with a package manager.
 
-## Why not interactsh?
+### Why not interactsh?
 
 Interactsh allows self-hosting using interactsh-server.
+
+### Why not webhook.site?
+
+---
 
 On one hand, you have mature OAST tools such as interactsh, Burp Collaborator, and online webhooks. Unfortunately, due to abuse by black hats, these free services are becoming increasingly signatured by firewalls/DLP/IDS which means it's hard to be confident that a negative is a True Negative.
 
@@ -479,14 +614,17 @@ This does mean this tool comes with a few disadvantages, which should be acknowl
 - 
 
 I still use interactsh; it's a great tool boasting many integrations. But tools have a time and place, and it's nice to have a choice. You wouldn't use a hammer to cut an apple.
+-->
 
 ## Warnings
 
-- Implementation is based on Python's built-in HTTP Server which is known to be *not intended* for production use. My personal recommendation is to not keep this long running, and use it primarily for quick tests. Use at your own risk.
+> [!WARNING]
+> While MOSS is hardened against security attacks, the implementation still shares similarities with Python's built-in `http.server` which is known to be *not intended* for production. Use at your own risk.
 
-- Disclaimer: This tool is intended for authorised and ethical purposes only. The developers of this tool are not liable for any damages, legal consequences, or loss of data resulting from the use or misuse of this tool. Users are solely responsible for ensuring compliance with applicable laws and regulations.
+> [!WARNING]
+> Disclaimer: This tool is intended for authorised and ethical purposes only. The developers of this tool are not liable for any damages, legal consequences, or loss of data resulting from the use or misuse of this tool. Users are solely responsible for ensuring compliance with applicable laws and regulations.
 
-## Roadmap (PRs welcome!)
+## Roadmap
 
 - [ ] project: tests
 - [ ] project: automation examples
@@ -503,3 +641,5 @@ I still use interactsh; it's a great tool boasting many integrations. But tools 
 - [ ] ui: anchored status bar, displaying stats, e.g. number of filtered requests, number of anomalies
 - [ ] misc: better structured reporting of anomalies and socket-level analysis?
 - [ ] stealthnet: more TODOs in [ext/stealthnet/README.md](ext/stealthnet/README.md#roadmap)!
+
+PRs welcome.

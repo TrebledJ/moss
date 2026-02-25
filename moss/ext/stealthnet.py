@@ -48,7 +48,7 @@ REQUIRED_STATE_VARIABLES = {"currentIndex", "finalIndex", "filename"}
 
 @dataclass
 class StealthyUploadMixin:
-    stealth_path: str = _field("/upload", group=GROUP, doc="HTTP path which accepts upload payloads")
+    stealth_path: str = _field("/sneakers", group=GROUP, doc="HTTP path which accepts upload payloads")
     stealth_profile_path: str = _field("profile.json", group=GROUP, flags=["--stealth-profile"], doc="The stealth profile to use")
     stealth_no_validate: bool = _field(False, group=GROUP, doc="Skip JSON schema validation. I too like to live dangerously. Note that passing this option does not suppress profile parsing errors, such as missing variables.")
 
@@ -256,7 +256,7 @@ class StealthyUploadProcessor:
         cat = req.server.stealth_catalogue
         requests = cat.find(req)
         if not requests:
-            self.logger.info(f"could not find matching request for incoming request:\n{req.requestline}")
+            self.logger.info(f"[stealthnet] could not find matching request for incoming request:\n{req.requestline}")
             return None
 
         self.logger.info(f'{req.requestline} --> matches {len(requests)} / {requests[0]}')

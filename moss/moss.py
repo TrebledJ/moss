@@ -1196,14 +1196,14 @@ def load_module(path):
     return mod
 
 def load_module_with_retry(path):
-    mod = load_module(path)
-    if mod:
-        return mod
-    
     path = str(path)
     if not path.endswith(".py"):
         path += ".py"
 
+    mod = load_module(path)
+    if mod:
+        return mod
+    
     path = Path(__file__).parent / "ext" / path
     mod = load_module(path)
     if mod:
