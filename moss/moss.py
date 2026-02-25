@@ -37,7 +37,7 @@ import math
 # else:
 #     printe('websockets loaded!')
 
-__version__ = '0.6'
+__version__ = '0.6.0'
 
 __all__ = [
     'MossRequestHandler', 'HttpMossServer',
