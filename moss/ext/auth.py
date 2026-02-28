@@ -77,4 +77,7 @@ class AuthProcessor:
                 headers["WWW-Authenticate"] = "Bearer realm=\"Protected Area\""
             req.send_response_full(401, headers=headers)
             return True
+
+        # Passes auth.
+        req.mark_ip_ok()
         

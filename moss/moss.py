@@ -638,6 +638,12 @@ class MossRequestHandler(BaseHTTPRequestHandler):
             return
         self.server.ratelimiter.mark(self.client_address[0], weight)
 
+    def mark_ip_ok(self):
+        """Treat the IP as ok, erase past records."""
+        if not self.server.enable_blocking:
+            return
+        self.server.ratelimiter.reset(self.client_address[0])
+
 @dataclass
 class BadIP:
     score: float = 0
