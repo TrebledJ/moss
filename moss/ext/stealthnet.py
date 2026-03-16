@@ -340,7 +340,7 @@ class StealthBytesEventHandler:
         self.printe(f"{c.CYN}{status:><30}{c.RST}\n")
 
 
-VAR_REGEX = re.compile(r'(\$\{(?:\w+)(?::[a-zA-Z0-9]+)?(?::[0-9]+)?\})')
+VAR_REGEX = re.compile(r'(\$\{(?:[^\}]+)(?::[a-zA-Z0-9]+)?(?::[0-9]+)?\})')
 STRICT_UUID_REGEX = re.compile(r'[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}')
 
 """-------------
@@ -484,7 +484,7 @@ def make_token(tag, *args):
         if cls._tag == tag:
             cls.validate(*args)
             return cls(*args)
-    raise JDSLProfileError(f"unknown tag: {tag}({', '.join(args)})")
+    raise JDSLProfileError(f"unknown tag: {':'.join([tag, *args])}")
 
 class JDSLProfileError(Exception): pass
 
