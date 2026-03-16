@@ -37,7 +37,7 @@ import math
 # else:
 #     printe('websockets loaded!')
 
-__version__ = '0.6.1'
+__version__ = '0.6.2'
 
 __all__ = [
     'MossRequestHandler', 'HttpMossServer',
@@ -73,11 +73,19 @@ WEBDAV_COMMANDS = [
 # TODO: test nc client, send 1 byte, then hang
 SOCKET_TIMEOUT = 30
 
+TIMEOUT_FOR_FIRST_BYTE = 8 # Timeout for the first byte
+TIMEOUT_FOR_NEWLINE = 5    # Timeout when reading a line
+TIMEOUT_FOR_BODY = 10      # Timeout for the request body
+# TIMEOUT_FOR_REQUEST = 30   # Timeout for the entire request
+
 # Controls the size of the queue used to pass messages from RequestHandlers to the main server thread.
 QUEUE_MAX_SIZE = 40
 
 # Controls the maximum length of the first line of a HTTP request.
 MAX_REQUESTLINE_LENGTH = 8192
+
+# 100MB
+MAX_BODY_SIZE = 100 * 1024 * 1024
 
 # List of static file extensions, which influence whether a file may be gzipped if enabled
 STATIC_FILE_EXTENSIONS = {
@@ -139,6 +147,143 @@ def memoised_gzippy(s: bytes) -> bytes:
     return compressed
 
 class InitSuccessError(Exception): pass
+class RequestTooLarge(Exception): pass
+
+class TimeoutBufferedReader:
+    """
+    Wraps the original rfile (BufferedReader) to enforce:
+    - total per-line timeout (for request line + headers)
+    - total inactivity timeout during body reading
+    - Uses our own buffer so readline and read stay consistent
+    """
+    def __init__(self, rfile, connection, timeout=15.0, line_timeout=TIMEOUT_FOR_NEWLINE, read_timeout=TIMEOUT_FOR_BODY, default_size=4096*1024):
+        self.rfile = rfile                  # original io.BufferedReader
+        # self.sock_fileno = rfile.fileno()
+        self.connection = connection
+        self.timeout = timeout              # max seconds between any two successful reads
+        self.line_timeout = line_timeout
+        self.read_timeout = read_timeout
+        self._buffer = bytearray()          # our single source-of-truth buffer
+        self._pastreadbuffer = bytearray()
+        self._last_read_time = time.monotonic()
+        self.default_size = default_size
+        self.connection.setblocking(0) # set non-blocking to use with select
+
+    def _wait_for_data(self, remaining_timeout):
+        """Block via select until data or timeout"""
+        # if remaining_timeout <= 0:
+        #     raise TimeoutError("Read timeout (no activity)")
+
+        # bl = self.connection.getblocking()
+        # self.connection.setblocking(0) # set non-blocking to use with select
+        rlist, _, _ = select.select([self.connection], [], [], remaining_timeout)
+        # self.connection.setblocking(bl)
+        if not rlist:
+            raise TimeoutError("Read timeout (no activity)")
+        return True
+
+    def _read_chunk(self, size=-1):
+        """Internal: read up to size bytes from underlying socket/file"""
+        now = time.monotonic()
+        remaining = self.timeout - (now - self._last_read_time)
+
+        # if remaining <= 0:
+        #     raise TimeoutError("Inactivity timeout")
+
+        self._wait_for_data(remaining)
+
+        # Now safe to read (data pending)
+        chunk = self.rfile.read(size if size > 0 else self.default_size)
+        if chunk:
+            logger.debug(f"read {len(chunk)} bytes: {chunk[:100]}")
+            self._last_read_time = time.monotonic()
+        return chunk
+
+    def readline(self, limit=-1):
+        start = time.monotonic()
+        while True:
+            nl_pos = min(self._buffer.find(b'\n'), limit)
+            # Return if a newline was found, or if the limit is exceeded
+            if nl_pos != -1 or (nl_pos := len(self._buffer)) >= limit:
+                line = bytes(self._buffer[:nl_pos + 1])
+                self._pastreadbuffer += self._buffer[:nl_pos + 1]
+                del self._buffer[:nl_pos + 1]
+                return line
+
+            # Check total line timeout
+            elapsed = time.monotonic() - start
+            if elapsed >= self.line_timeout:
+                raise TimeoutError("Line read timeout")
+
+            chunk = self._read_chunk(self.default_size if limit < 0 else limit - len(self._buffer))
+
+            # elapsed = time.monotonic() - start
+            # if elapsed < self.line_timeout:
+            #     continue
+            
+            if not chunk:
+                # EOF before newline → return partial or empty
+                line = bytes(self._buffer)
+                self._buffer.clear()
+                self._pastreadbuffer += self._buffer
+                return line
+
+            self._buffer.extend(chunk)
+
+    def read(self, size=-1):
+        if size == 0:
+            return b''
+        
+        start = time.monotonic()
+        if size < 0:  # read all
+            result = bytes(self._buffer)
+            self._pastreadbuffer += self._buffer
+            self._buffer.clear()
+            while True:
+                elapsed = time.monotonic() - start
+                logger.info(f"read: elapsed={elapsed:.2f}, size={len(result)}")
+                if elapsed >= self.read_timeout:
+                    raise TimeoutError("read timeout")
+
+                chunk = self._read_chunk(self.default_size)
+                if not chunk:
+                    break
+                result += chunk
+                self._pastreadbuffer += chunk
+            return result
+
+        # fixed size
+        result = bytearray()
+        while len(result) < size:
+            elapsed = time.monotonic() - start
+            logger.info(f"read: elapsed={elapsed:.2f}, size={len(result)}/{size}")
+            if elapsed >= self.read_timeout:
+                raise TimeoutError("read timeout")
+            
+            if self._buffer:
+                take = min(size - len(result), len(self._buffer))
+                result.extend(self._buffer[:take])
+                self._pastreadbuffer += self._buffer[:take]
+                del self._buffer[:take]
+                continue
+
+            chunk = self._read_chunk(min(self.default_size, size - len(result)))
+            if not chunk:
+                break
+            self._pastreadbuffer += chunk
+            result.extend(chunk)
+
+        return bytes(result)
+
+    def readinto(self, b):
+        # Used by some higher-level code (e.g. http.client for chunked)
+        data = self.read(len(b))
+        b[:len(data)] = data
+        return len(data)
+
+    def __getattr__(self, name):
+        # Forward anything else (close, fileno, etc.)
+        return getattr(self.rfile, name)
 
 class MossRequestHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
@@ -166,19 +311,11 @@ class MossRequestHandler(BaseHTTPRequestHandler):
         https://github.com/python/cpython/blob/3.14/Lib/http/server.py#L320
         """
 
-        # We need select here to set timeouts. Without this, connection timeout is 
-        # dependent on the client, which could be a potential DoS vector.
-        ready = select.select([request], [], [], SOCKET_TIMEOUT)
-        if not ready[0]:
-            # testcase: nc $host $port, then wait
-            self.handle_anomaly(
-                f'connection timed out',
-                tags=['portscan', 'dos'],
-            )
+        if not self.wait_for_first_byte(TIMEOUT_FOR_FIRST_BYTE):
             return
     
         try:
-            bytes_ = request.recv(1024, socket.MSG_PEEK)
+            bytes_ = request.recv(256, socket.MSG_PEEK)
         except ConnectionResetError as e:
             # testcase: nmap -sT
             self.handle_anomaly(
@@ -235,6 +372,23 @@ class MossRequestHandler(BaseHTTPRequestHandler):
         self.init_success = True
         super().__init__(request, client_address, server)
 
+    def setup(self):
+        super().setup()
+        self.rfile = TimeoutBufferedReader(self.rfile, self.request, 5)
+
+    def wait_for_first_byte(self, timeout):
+        # We need select here to set timeouts. Without this, connection timeout is 
+        # dependent on the client, which could be a potential DoS vector.
+        ready = select.select([self.request], [], [], timeout)
+        if ready[0]:
+            return True
+        # testcase: nc $host $port, then wait
+        self.handle_anomaly(
+            f'connection timed out',
+            tags=['portscan', 'dos'],
+        )
+        return False
+        
     def wait_for_byte(self, timeout):
         bl = self.request.getblocking()
         self.request.setblocking(0) # set non-blocking to use with select
@@ -302,8 +456,15 @@ class MossRequestHandler(BaseHTTPRequestHandler):
         kwargs = {}
         if explain:
             kwargs["details"] = f"Explanation: {explain}"
+        
+        original_message = message
+        if message is None:
+            if code in self.responses:
+                message = self.responses[code][0]
+            else:
+                message = ''
         self.handle_anomaly(message, **kwargs)
-        self.send_response(code, message)
+        self.send_response(code, original_message)
         self.send_header("Connection", "close")
         self.end_headers()
 
@@ -374,8 +535,8 @@ class MossRequestHandler(BaseHTTPRequestHandler):
         self.debug('handle one request')
         self.request_timestamp = self.log_date_time_string()
         try:
-            self.wait_for_byte(5)
             self.raw_requestline = self.rfile.readline(MAX_REQUESTLINE_LENGTH + 1)
+
             self.debug(f'read {len(self.raw_requestline)} bytes')
             if len(self.raw_requestline) > MAX_REQUESTLINE_LENGTH:
                 self.requestline = ''
@@ -388,18 +549,31 @@ class MossRequestHandler(BaseHTTPRequestHandler):
                 return
             if not self.parse_request():
                 # An error code has been sent, just exit
+                self.close_connection = True
                 return
-            content_length = int(self.headers.get('Content-Length', 0))
-            self.body = self.rfile.read(content_length)
+            try:
+                content_length = int(self.headers.get('Content-Length', 0))
+                if content_length <= 0: raise ValueError(f"expected positive content length")
+                if content_length > MAX_BODY_SIZE:
+                    raise RequestTooLarge()
+                self.body = self.rfile.read(content_length)
+            except ValueError:
+                self.body = b""
             self.filter_matches = self.is_match(self.requestline, self.body)
             self.correlation_id = self.extract_correlation_id(self.requestline, self.headers, self.body)
             self.handle_method(self.command)
-            self.wfile.flush() #actually send the response if not already done.
+        except RequestTooLarge:
+            self.send_error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
+            self.close_connection = True # Whatever man.
         except TimeoutError as e:
             #a read or a write timed out.  Discard this connection
-            self.log_error("Request timed out: %r", e)
+            self.debug(f"Request timed out: {e}")
+            # self.handle_anomaly(f"request timed out", details=bytes(self.rfile._buffer))
+            self.handle_anomaly(f"request timed out", details=bytes(self.rfile._pastreadbuffer + self.rfile._buffer))
             self.close_connection = True
             return
+        finally:
+            self.wfile.flush() # actually send the response if not already done.
         # return super().handle_one_request()
 
     def parse_request(self):
@@ -458,9 +632,10 @@ class MossRequestHandler(BaseHTTPRequestHandler):
                     raise ValueError("unreasonable length http version")
                 version_number = int(version_number[0]), int(version_number[1])
             except (ValueError, IndexError):
-                self.send_error(
-                    HTTPStatus.BAD_REQUEST,
-                    "Bad request version (%r)" % version)
+                self.handle_anomaly(anomaly=f"non-http request", details=self.raw_requestline + self.rfile._buffer)
+                # self.send_error(
+                #     HTTPStatus.BAD_REQUEST,
+                #     "Bad request version (%r)" % version)
                 return False
             if version_number >= (1, 1) and self.protocol_version >= "HTTP/1.1":
                 self.close_connection = False
@@ -471,23 +646,11 @@ class MossRequestHandler(BaseHTTPRequestHandler):
                 return False
             self.request_version = version
 
-        if not 2 <= len(words) <= 3:
-            self.send_error(
-                HTTPStatus.BAD_REQUEST,
-                "Bad request syntax (%r)" % requestline)
+        if len(words) != 3:
+            self.handle_anomaly(f"non-http request", details=self.raw_requestline + bytes(self.rfile._buffer))
             return False
         
-        command, path = words[:2]
-        if len(words) == 2:
-            self.close_connection = True
-            if command != 'GET':
-                self.send_error(
-                    HTTPStatus.BAD_REQUEST,
-                    "Bad request syntax (%r)" % requestline)
-                return False
-            is_http_0_9 = True
-        self.command, self.path = command, path
-
+        self.command, self.path = words[:2]
         self.proto = 'HTTPS' if self.is_ssl else 'HTTP'
 
         # gh-87389: The purpose of replacing '//' with '/' is to protect
@@ -587,6 +750,10 @@ class MossRequestHandler(BaseHTTPRequestHandler):
             self.handle_anomaly(f"TCP socket was opened, but connection reset ({e})")
         except ssl.SSLError as e:
             self.handle_anomaly(f"ssl error during handle ({e})")
+        except TimeoutError as e:
+            self.handle_anomaly(f"timeout: {e}")
+            logger.info(f"timeout: {e}")
+            pass
         finally:
             try:
                 if self.is_ssl:
@@ -603,13 +770,7 @@ class MossRequestHandler(BaseHTTPRequestHandler):
                 self.handle_anomaly(f"{e.__class__.__name__}: {e} (during ssl unwrap)")
                 
             # Safely clear buffers and close the connection
-            try:
-                self.rfile.close()
-                self.wfile.flush()
-                self.wfile.close()
-                # pass
-            except Exception as e:
-                printe("Error occurred while clearing buffer after anomaly:", e)
+            self.finish()
 
     def log_message(self, format, *args):
         # We don't want the default log
@@ -780,6 +941,8 @@ class HttpMossServer:
         server.server_close()
         
     def serve(self):
+        if self.server.running:
+            return
         self.server.running = True
         self.thread = threading.Thread(target=self.__class__._run_http_server, args=(self.server, ))
         self.thread.start()
@@ -1100,7 +1263,7 @@ class DefaultProcessor:
         return True
 
 def escape_non_printable(s):
-    if type(s) == bytes:
+    if type(s) in (bytes, bytearray):
         s = s.decode(errors='backslashreplace')
     return "".join(c if c.isprintable() or c in '\r\n' else r'\x{0:02x}'.format(ord(c)) for c in s)
 
@@ -1275,6 +1438,7 @@ class MossBuilder:
         self.processors = []
         self.handlers = []
         self.args = sys.argv[1:] if args is None else args
+        self.args = [str(x) for x in self.args] # Ensure args are strings, useful when testing.
 
     def load_mixin(self, *cls):
         self.mixins += [*cls]
@@ -1386,20 +1550,28 @@ class MossRunner:
                 printe(f"{CLR_RED}Le event: {event}{CLR_RST}")
                 printe(traceback.format_exc())
 
-    def loop(self):
+    def serve(self):
         for server in self.servers:
             server.serve()
-        
+
+    def poll(self, timeout_per_server=0.2):
+        for server in self.servers:
+            if (event := server.wait(timeout_per_server)) is not None:
+                self.handle_event(event)
+
+    def shutdown(self):
+        printe('shutting down...')
+        for server in self.servers:
+            server.shutdown()
+
+    def loop(self):
+        self.serve()
         try:
             # Poll servers.
             while True:
-                for server in self.servers:
-                    if (event := server.wait(0.2)) is not None:
-                        self.handle_event(event)
+                self.poll()
         except KeyboardInterrupt:
-            printe('shutting down...')
-            for server in self.servers:
-                server.shutdown()
+            self.shutdown()
 
 def main():
     builder = MossBuilder()

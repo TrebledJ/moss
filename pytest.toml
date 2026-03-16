@@ -1,0 +1,4 @@
+[pytest]
+markers = [
+    "moss_args: customises the moss server",
+]
