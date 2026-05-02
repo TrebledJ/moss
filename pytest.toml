@@ -1,0 +1,6 @@
+[pytest]
+markers = [
+    "moss_args: customises the moss server with additional flags",
+    "moss_https: adds https flags",
+    "override_moss_port: override the default port, for debugging test cases",
+]
