@@ -1,5 +1,6 @@
+.vscode/
 config.txt
-launch.json
+local/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

@@ -33,7 +33,7 @@ The general intended use is to host this on a VPS or— in case you're testing a
 - [x] modular extensions, include what you need
     - [x] send notifications to **Discord** webhook on match
     - [x] protect endpoints with **auth** middleware (basic, bearer)
-    - [x] in-memory **pastebin** (with client-side password protection)
+    - [x] in-memory **pastebin** (with end-to-end encryption)
     - [x] robust **stealthy** exfiltration module customisable via a JSON DSL
     - [x] serve local files
     - [x] upload files
@@ -362,7 +362,7 @@ The `ext/` folder contains several extensions which double as examples to get yo
 - `ext/file.py` - File server, inspired by Python's built-in `http.server`
 - `ext/upload.py` - Simple upload server inspired by the classic [uploadserver](https://github.com/Densaugeo/uploadserver/) package.
 - `ext/notify.py` - Third-party webhook notifications, allowing basic filtering by event type. Currently only supports Discord.
-- `ext/pastebin.py` - Encrypted pastebin service.
+- `ext/pastebin.py` - End-to-end-encrypted pastebin service.
 - `ext/stealthnet.py` - Stealthy upload service with a customisable profile
 
 PRs are also welcome to contribute new extensions.
@@ -383,7 +383,7 @@ moss -e auth pastebin \
 Using the `pastebin` extension with `auth` provides two layers of password protection.
 
 1. The first layer (`auth` module) is to protect against unauthorised access to the `/pastebin` URL.
-2. The second layer (`pastebin` client-side password) is to protect against MITM whether it's malicious or blue team.
+2. The second layer (`pastebin`'s end-to-end encryption) is to protect against MITM whether it's malicious or blue team.
     
     By using a password which is not sent across the network, we ensure that eavesdroppers don't have access to the data. Of course, this only holds if the pastebin password is different from the auth password.
 
@@ -397,7 +397,7 @@ Recommended Command:
 moss -e auth stealthnet file \
     --basic-auth your:password \
     --index --file-index -d dest \
-    --profile profile.json \
+    --stealth-profile profile.json \
     --simple --server random \
     --https --certfile ... --keyfile ...
 ```
@@ -412,7 +412,7 @@ Some use cases:
 - Deliver large files by chunking and using minimal delay
 - Mimic and blend in with existing web traffic for stealthier exfiltration
 
-MOSS pre-packages several profiles, which can be specified via `--profile FILE`:
+MOSS pre-packages several profiles, which can be specified via `--stealth-profile FILE`:
 
 - `profile.json` - default, resembles a web app with an API
 - `chunk5kbget.json` - sends 5 KB per GET request, minimal delay
@@ -532,12 +532,29 @@ sudo ln -s /opt/certbot/bin/certbot /usr/local/bin/certbot
 sudo certbot certonly --standalone
 ```
 
+Alternatively, you can generate self-signed certs like so:
+
+```shell
+openssl req -new -x509 -nodes -days 365 -out server.crt -keyout server.key -sha256
+```
+
 Then run like so:
 
 ```shell
 moss.py --https --certfile /etc/letsencrypt/live/your.domain.com/fullchain.pem --keyfile /etc/letsencrypt/live/your.domain.com/privkey.pem
 ```
 
+For LetsEncrypt, You may need to play around with permissions to get this to work.
+
+```shell
+sudo moss --https --certfile ... --keyfile ...
+
+# or
+
+cp /etc/letsencrypt/live/your.domain.com/{fullchain,privkey}.pem .
+sudo chown $USER:$USER {fullchain,privkey}.pem
+moss --https --certfile fullchain.pem --keyfile privkey.pem
+```
 
 ## Extensions
 
@@ -625,6 +642,15 @@ I still use interactsh; it's a great tool boasting many integrations. But tools 
 
 > [!WARNING]
 > Disclaimer: This tool is intended for authorised and ethical purposes only. The developers of this tool are not liable for any damages, legal consequences, or loss of data resulting from the use or misuse of this tool. Users are solely responsible for ensuring compliance with applicable laws and regulations.
+
+> [!WARNING]
+> MOSS is not intended to be used with reverse proxies.
+
+## Disclaimer
+
+> [!WARNING]
+> This code is provided "as is" without warranty of any kind, express or implied, including but not limited to the warranties of merchantability, fitness for a particular purpose, and noninfringement. In no event shall the authors or copyright holders be liable for any claim, damages, or other liability, whether in an action of contract, tort, or otherwise, arising from, out of, or in connection with the software or the use or other dealings in the software. Use at your own risk.
+
 
 ## Roadmap
 
