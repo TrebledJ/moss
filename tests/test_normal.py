@@ -13,6 +13,7 @@ class TestDefault:
         r = http_client.get("/")
         assert r.status_code != 0
 
+
 @pytest.mark.moss_args("--status-code", 404, "--body", TEST_BODY)
 class TestHttpResponse:
     def test_basic_get(cls, http_client):
@@ -32,6 +33,25 @@ class TestHttpResponse:
         r = await async_http_client.get("/yabadabadoo")
         assert r.status_code == 404
 
+
+@pytest.mark.moss_args("--status-code", 404, "--body", TEST_BODY)
+# @pytest.mark.override_moss_port(8000)
+class TestHttp1Connection:
+    def test_connection_keep_alive(cls, http_client):
+        r = http_client.get("/")
+        assert r.status_code == 404
+
+        r = http_client.get("/")
+        assert r.status_code == 404
+
+    def test_connection_close(cls, http_client):
+        r = http_client.get("/", headers={"Connection": "close"})
+        assert r.status_code == 404
+
+        r = http_client.get("/", headers={"Connection": "close"})
+        assert r.status_code == 404
+
+
 @pytest.mark.moss_args("--server", "random")
 class TestServerRandom:
     def test_server_opsec(cls, http_client):
@@ -40,11 +60,13 @@ class TestServerRandom:
         assert "github" not in str(r.headers["server"]).lower()
         assert "moss" not in str(r.headers["server"]).lower()
 
+
 @pytest.mark.moss_args("--server", "none")
 class TestServerNone:
     def test_no_server_header(cls, http_client):
         r = http_client.get("/")
         assert r.headers.get("server") is None
+
 
 LONG_HEADER = "a" * 1000
 WEIRD_HEADER = "$ %,17!(*^(!@[]|{}./))"
@@ -106,6 +128,6 @@ class TestRequestTooLarge:
         payload = (MAX_BODY_SIZE + 1) * "a"
         r = http_client.post("/", content=payload)
         srv = moss_runner.servers[0]
-        expect_anomaly(srv, "Request Entity Too Large")
+        expect_anomaly(srv, "Content Too Large")
 
     

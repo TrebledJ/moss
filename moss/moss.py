@@ -149,6 +149,169 @@ def memoised_gzippy(s: bytes) -> bytes:
 class InitSuccessError(Exception): pass
 class RequestTooLarge(Exception): pass
 
+class TimeoutBufferedReader:
+    """
+    Wraps the original rfile (BufferedReader) to enforce:
+    - total per-line timeout (for request line + headers)
+    - total inactivity timeout during body reading
+    - Uses our own buffer so readline and read stay consistent
+    """
+    def __init__(self, rfile, connection, timeout=15.0, line_timeout=TIMEOUT_FOR_NEWLINE, read_timeout=TIMEOUT_FOR_BODY, default_size=4096*1024):
+        self.rfile = rfile                  # original io.BufferedReader
+        # self.sock_fileno = rfile.fileno()
+        self.connection = connection
+        self.timeout = timeout              # max seconds between any two successful reads
+        self.line_timeout = line_timeout
+        self.read_timeout = read_timeout
+        self._buffer = bytearray()          # our single source-of-truth buffer
+        self._pastreadbuffer = bytearray()
+        self._last_read_time = time.monotonic()
+        self.default_size = default_size
+        self.connection.setblocking(0) # set non-blocking to use with select
+
+    def _wait_for_data(self, remaining_timeout):
+        """Block via select until data or timeout"""
+        # if remaining_timeout <= 0:
+        #     raise TimeoutError("Read timeout (no activity)")
+
+        # bl = self.connection.getblocking()
+        # self.connection.setblocking(0) # set non-blocking to use with select
+        rlist, _, _ = select.select([self.connection], [], [], remaining_timeout)
+        # self.connection.setblocking(bl)
+        if not rlist:
+            raise TimeoutError("Read timeout (no activity)")
+        return True
+
+    def _read_chunk(self, size=-1):
+        """Internal: read up to size bytes from underlying socket/file"""
+        now = time.monotonic()
+        remaining = self.timeout - (now - self._last_read_time)
+
+        # if remaining <= 0:
+        #     raise TimeoutError("Inactivity timeout")
+
+        self._wait_for_data(remaining)
+
+        # Now safe to read (data pending)
+        chunk = self.rfile.read(size if size > 0 else self.default_size)
+        if chunk:
+            logger.debug(f"read {len(chunk)} bytes: {chunk[:100]}")
+            self._last_read_time = time.monotonic()
+        return chunk
+
+    def readline(self, limit=-1):
+        start = time.monotonic()
+        while True:
+            nl_pos = min(self._buffer.find(b'\n'), limit)
+            # Return if a newline was found, or if the limit is exceeded
+            if nl_pos != -1 or (nl_pos := len(self._buffer)) >= limit:
+                line = bytes(self._buffer[:nl_pos + 1])
+                self._pastreadbuffer += self._buffer[:nl_pos + 1]
+                del self._buffer[:nl_pos + 1]
+                return line
+
+            # Check total line timeout
+            elapsed = time.monotonic() - start
+            if elapsed >= self.line_timeout:
+                raise TimeoutError("Line read timeout")
+
+            chunk = self._read_chunk(self.default_size if limit < 0 else limit - len(self._buffer))
+
+            # elapsed = time.monotonic() - start
+            # if elapsed < self.line_timeout:
+            #     continue
+            
+            if not chunk:
+                # EOF before newline → return partial or empty
+                line = bytes(self._buffer)
+                self._buffer.clear()
+                self._pastreadbuffer += self._buffer
+                return line
+
+            self._buffer.extend(chunk)
+
+    def read(self, size=-1):
+        if size == 0:
+            return b''
+        
+        start = time.monotonic()
+        if size < 0:  # read all
+            result = bytes(self._buffer)
+            self._pastreadbuffer += self._buffer
+            self._buffer.clear()
+            while True:
+                elapsed = time.monotonic() - start
+                logger.info(f"read: elapsed={elapsed:.2f}, size={len(result)}")
+                if elapsed >= self.read_timeout:
+                    raise TimeoutError("read timeout")
+
+                chunk = self._read_chunk(self.default_size)
+                if not chunk:
+                    break
+                result += chunk
+                self._pastreadbuffer += chunk
+            return result
+
+        # fixed size
+        result = bytearray()
+        while len(result) < size:
+            elapsed = time.monotonic() - start
+            logger.info(f"read: elapsed={elapsed:.2f}, size={len(result)}/{size}")
+            if elapsed >= self.read_timeout:
+                raise TimeoutError("read timeout")
+            
+            if self._buffer:
+                take = min(size - len(result), len(self._buffer))
+                result.extend(self._buffer[:take])
+                self._pastreadbuffer += self._buffer[:take]
+                del self._buffer[:take]
+                continue
+
+            chunk = self._read_chunk(min(self.default_size, size - len(result)))
+            if not chunk:
+                break
+            self._pastreadbuffer += chunk
+            result.extend(chunk)
+
+        return bytes(result)
+
+    def drop(self, size):
+        start = time.monotonic()
+        # Consume any data already in our internal buffer
+        if self._buffer:
+            take = min(size, len(self._buffer))
+            self._pastreadbuffer += self._buffer[:take]
+            del self._buffer[:take]
+            size -= take
+        # Read remaining bytes from underlying socket with timeout
+        # Use longer timeout since client may be slowly sending data
+        if size > 0:
+            remaining = size
+            while remaining > 0:
+                elapsed = time.monotonic() - start
+                if elapsed >= self.read_timeout:
+                    raise TimeoutError("drop timeout")
+                chunk_size = min(remaining, self.default_size)
+                # Wait for data to be available (with timeout)
+                try:
+                    self._wait_for_data(self.read_timeout - elapsed)
+                    chunk = self.rfile.read(chunk_size)
+                except (BlockingIOError, TimeoutError, OSError):
+                    chunk = None
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+
+    def readinto(self, b):
+        # Used by some higher-level code (e.g. http.client for chunked)
+        data = self.read(len(b))
+        b[:len(data)] = data
+        return len(data)
+
+    def __getattr__(self, name):
+        # Forward anything else (close, fileno, etc.)
+        return getattr(self.rfile, name)
+
 class MossRequestHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -187,6 +350,8 @@ class MossRequestHandler(BaseHTTPRequestHandler):
                 tags=['portscan'],
             )
             return
+    
+        self.request.setblocking(True)
         
         if len(bytes_) == 0:
             # testcase: nc $host $port, then ^C
@@ -235,6 +400,10 @@ class MossRequestHandler(BaseHTTPRequestHandler):
 
         self.init_success = True
         super().__init__(request, client_address, server)
+
+    def setup(self):
+        super().setup()
+        self.rfile = TimeoutBufferedReader(self.rfile, self.request, 5)
 
     def wait_for_first_byte(self, timeout):
         # We need select here to set timeouts. Without this, connection timeout is 
@@ -395,8 +564,8 @@ class MossRequestHandler(BaseHTTPRequestHandler):
         self.debug('handle one request')
         self.request_timestamp = self.log_date_time_string()
         try:
-            self.wait_for_byte(5)
             self.raw_requestline = self.rfile.readline(MAX_REQUESTLINE_LENGTH + 1)
+
             self.debug(f'read {len(self.raw_requestline)} bytes')
             if len(self.raw_requestline) > MAX_REQUESTLINE_LENGTH:
                 self.requestline = ''
@@ -423,8 +592,10 @@ class MossRequestHandler(BaseHTTPRequestHandler):
             self.correlation_id = self.extract_correlation_id(self.requestline, self.headers, self.body)
             self.handle_method(self.command)
         except RequestTooLarge:
+            # Read and discard the body so client can finish sending
+            self.rfile.drop(content_length)
             self.send_error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
-            self.close_connection = True # Whatever man.
+            self.close_connection = True
         except TimeoutError as e:
             #a read or a write timed out.  Discard this connection
             self.debug(f"Request timed out: {e}")
@@ -493,6 +664,9 @@ class MossRequestHandler(BaseHTTPRequestHandler):
                 version_number = int(version_number[0]), int(version_number[1])
             except (ValueError, IndexError):
                 self.handle_anomaly(anomaly=f"non-http request", details=self.raw_requestline + self.rfile._buffer)
+                # self.send_error(
+                #     HTTPStatus.BAD_REQUEST,
+                #     "Bad request version (%r)" % version)
                 return False
             if version_number >= (1, 1) and self.protocol_version >= "HTTP/1.1":
                 self.close_connection = False
@@ -907,6 +1081,12 @@ def shorten(s):
     return s
 
 
+def utf8decode(s):
+    if type(s) == bytes:
+        return s.decode("utf-8", errors="backslashreplace")
+    return s
+
+
 @dataclass
 class LoggingEventHandler:
     """
@@ -977,7 +1157,7 @@ class LoggingEventHandler:
     def log_to_jsonl(self, *, headers=None, body='', **kwargs):
         if not self.jsonl_file: return
         jsonl_headers = {k.lower(): v for k, v in headers.items()} if headers else {}
-        output = json.dumps(dict(**kwargs, headers=jsonl_headers, body=shorten(body)))
+        output = json.dumps(dict(**kwargs, headers=jsonl_headers, body=shorten(utf8decode(body))))
         if self.jsonl_file == '-':
             print(output, flush=True)
         else:
