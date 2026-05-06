@@ -8,9 +8,15 @@ def expect_event(srv, timeout=2, **expected_kwargs):
         for key, expected_value in expected_kwargs.items():
             actual_value = event.get(key)
             print(f"DEBUG: Checking {key}: expected={expected_value}, actual={actual_value}")
-            if actual_value != expected_value:
-                match = False
-                break
+            if key == "filter_matches":
+                if expected_value is True and not actual_value:
+                    match = False
+                elif expected_value is False and actual_value:
+                    match = False
+            else:
+                if actual_value != expected_value:
+                    match = False
+                    break
         if match:
             return event
     else:
@@ -38,6 +44,54 @@ class TestFilter:
         assert r.status_code != 0
         srv = moss_runner.servers[0]
         event = expect_event(srv, filter_matches=True)
+        assert event is not None
+
+
+@pytest.mark.moss_args("--filter", r"\d{3}")
+class TestFilterDigits:
+    def test_matches_three_digits_in_url(cls, http_client, moss_runner):
+        r = http_client.get("/?code=123")
+        assert r.status_code != 0
+        srv = moss_runner.servers[0]
+        event = expect_event(srv, filter_matches=True)
+        assert event is not None
+
+    def test_no_match_letters(cls, http_client, moss_runner):
+        r = http_client.get("/?code=abc")
+        assert r.status_code != 0
+        srv = moss_runner.servers[0]
+        event = expect_event(srv, filter_matches=False)
+        assert event is not None
+
+    def test_matches_digits_in_body(cls, http_client, moss_runner):
+        r = http_client.post("/", content=b"code 123 here")
+        assert r.status_code != 0
+        srv = moss_runner.servers[0]
+        event = expect_event(srv, filter_matches=True)
+        assert event is not None
+
+
+@pytest.mark.moss_args("--filter", r"admin|login|register")
+class TestFilterOrPattern:
+    def test_matches_admin(cls, http_client, moss_runner):
+        r = http_client.get("/admin")
+        assert r.status_code != 0
+        srv = moss_runner.servers[0]
+        event = expect_event(srv, filter_matches=True)
+        assert event is not None
+
+    def test_matches_login(cls, http_client, moss_runner):
+        r = http_client.get("/login")
+        assert r.status_code != 0
+        srv = moss_runner.servers[0]
+        event = expect_event(srv, filter_matches=True)
+        assert event is not None
+
+    def test_no_match_public(cls, http_client, moss_runner):
+        r = http_client.get("/public")
+        assert r.status_code != 0
+        srv = moss_runner.servers[0]
+        event = expect_event(srv, filter_matches=False)
         assert event is not None
 
 

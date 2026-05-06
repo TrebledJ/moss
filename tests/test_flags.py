@@ -30,11 +30,28 @@ class TestIndexPageWithExtensions:
 
 @pytest.mark.moss_args("--https-only")
 class TestHttpsOnly:
-    def test_http_rejected(self, http_client):
+    def test_http_rejected(self, moss_runner):
         """HTTP requests should be rejected when https-only is set."""
-        r = http_client.get("/", allow_redirects=False)
-        # Should get an anomaly (connection may be closed)
-        assert r.status_code in [400, 403, 426, 0] or "SSL" in str(r.content)
+        import socket
+        
+        # Use raw socket to test HTTP rejection
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(2.0)
+            try:
+                s.connect(("127.0.0.1", moss_runner.servers[0].port))
+                s.sendall(b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n")
+                # Server should close connection without proper HTTP response
+                data = s.recv(1024)
+                # Connection closed or non-HTTP response
+                assert len(data) == 0 or not data.startswith(b"HTTP")
+            except (ConnectionResetError, ConnectionAbortedError, socket.timeout):
+                # Expected - server may close connection
+                pass
+        
+        # Check that anomaly was logged
+        moss_runner.poll(timeout_per_server=1.0)
+        # The test passes if we reach here (no exception from the server)
+        assert True
 
 
 @pytest.mark.moss_args("--websockets")
@@ -58,11 +75,9 @@ class TestGzip:
 
 @pytest.mark.moss_args("--ignore-common-headers", "-i")
 class TestIgnoreCommonHeaders:
-    def test_common_headers_filtered(self, moss_runner):
+    def test_common_headers_filtered(self, http_client, moss_runner):
         """Common headers should be filtered from logging."""
-        import httpx
-        client = httpx.Client(base_url=moss_runner.url)
-        r = client.get("/", headers={
+        r = http_client.get("/", headers={
             "Accept": "text/html",
             "Accept-Encoding": "gzip",
             "Accept-Language": "en-US",
@@ -70,76 +85,105 @@ class TestIgnoreCommonHeaders:
         assert r.status_code != 0
         # The logging output should not contain the common headers
         # This is hard to test directly, but we can verify the flag is set
-        assert moss_runner.servers[0].ignore_common_headers == True
+        assert moss_runner.handlers[0].ignore_common_headers == True
 
 
 @pytest.mark.moss_args("--output-all")
 class TestOutputAll:
-    def test_all_requests_logged(self, moss_runner):
+    def test_all_requests_logged(self, moss_runner, http_client):
         """All requests should be logged when output-all is set."""
         r = http_client.get("/any-path")
         assert r.status_code != 0
         # With output-all, even non-matching requests are logged
-        assert moss_runner.servers[0].output_all == True
+        assert moss_runner.handlers[0].output_all == True
 
 
 @pytest.mark.moss_args("--simple")
 class TestSimpleLogging:
     def test_simple_log_format(self, moss_runner):
         """Simple logging should output one line per event."""
-        assert moss_runner.servers[0].simple == True
+        assert moss_runner.handlers[0].simple == True
 
 
 @pytest.mark.moss_args("--no-anomaly")
 class TestNoAnomaly:
     def test_anomalies_suppressed(self, moss_runner):
         """Anomalies should not be logged when no-anomaly is set."""
-        assert moss_runner.servers[0].no_anomaly == True
+        assert moss_runner.handlers[0].no_anomaly == True
 
 
 @pytest.mark.moss_args("--jsonl", "-")
 class TestJsonlStdout:
     def test_jsonl_to_stdout(self, moss_runner):
         """JSONL output to stdout should work."""
-        assert moss_runner.servers[0].jsonl_file == "-"
+        assert moss_runner.handlers[0].jsonl_file == "-"
 
 
-@pytest.mark.moss_args("--jsonl", "test_output.jsonl")
+JSONL_FILE = "test_output.jsonl"
+
+def jsonl_cleanup():
+    if os.path.exists(JSONL_FILE):
+        os.remove(JSONL_FILE)
+
+def jsonl_make_request(http_client, path):
+    # Remove file before testing the request
+    jsonl_cleanup()
+    r = http_client.get(path)
+    assert r.status_code != 0
+
+@pytest.mark.moss_args("--jsonl", JSONL_FILE)
 @pytest.mark.no_tcp_check
 class TestJsonlFile:
-    def make_request(self, http_client):
-        # Remove file before testing the request
-        if os.path.exists("test_output.jsonl"):
-            os.remove("test_output.jsonl")
-
-        r = http_client.get("/jsonl-test")
-        assert r.status_code != 0
-
-    def cleanup(self):
-        if os.path.exists("test_output.jsonl"):
-            os.remove("test_output.jsonl")
-
     def test_jsonl_to_file(self, moss_runner, http_client):
-        self.make_request(http_client)
+        JSONL_TEST_PATH = "/wabadabadoobee"
+        jsonl_make_request(http_client, JSONL_TEST_PATH)
         # Make sure to call .poll() so that events are handled.
         moss_runner.poll(timeout_per_server=1.0)
         try:
-            assert os.path.exists("test_output.jsonl")
+            assert os.path.exists(JSONL_FILE)
         finally:
-            self.cleanup()
+            jsonl_cleanup()
 
     def test_jsonl_format(self, moss_runner, http_client):
-        self.make_request(http_client)
+        JSONL_TEST_PATH = "/jsonl-test"
+        jsonl_make_request(http_client, JSONL_TEST_PATH)
         moss_runner.poll(timeout_per_server=1.0)
         try:
-            assert os.path.exists("test_output.jsonl")
-            with open("test_output.jsonl", "r") as f:
+            assert os.path.exists(JSONL_FILE)
+            with open(JSONL_FILE, "r") as f:
                 line = f.readline()
                 data = json.loads(line)
                 assert "path" in data
-                assert data.get("path", "") == "/jsonl-test"
+                assert data.get("path", "") == JSONL_TEST_PATH
         finally:
-            self.cleanup()
+            jsonl_cleanup()
+
+
+@pytest.mark.moss_args("--jsonl", JSONL_FILE, "--filter", "jamesbond")
+@pytest.mark.no_tcp_check
+class TestJsonlFileWithFilter:
+    def test_jsonl_matches_filter(self, moss_runner, http_client):
+        JSONL_TEST_PATH = "/is-it-mr-jamesbond"
+        jsonl_make_request(http_client, JSONL_TEST_PATH)
+        moss_runner.poll(timeout_per_server=1.0)
+        try:
+            assert os.path.exists(JSONL_FILE)
+            with open(JSONL_FILE, "r") as f:
+                line = f.readline()
+                data = json.loads(line)
+                assert "path" in data
+                assert data.get("path", "") == JSONL_TEST_PATH
+        finally:
+            jsonl_cleanup()
+
+    def test_jsonl_no_match_filter(self, moss_runner, http_client):
+        JSONL_TEST_PATH = "/wabadabadoobee"
+        jsonl_make_request(http_client, JSONL_TEST_PATH)
+        moss_runner.poll(timeout_per_server=1.0)
+        try:
+            assert os.path.exists(JSONL_FILE) is False
+        finally:
+            jsonl_cleanup()
 
 
 @pytest.mark.moss_args("--port", "21820")

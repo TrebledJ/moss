@@ -18,6 +18,9 @@ def get_free_port() -> int:
 def moss_runner(request):
     marker = request.node.get_closest_marker("moss_args")
     args = []
+    port = None
+
+    # Check for port in moss_args
     if marker is not None and ("-p" in marker.args or "--port" in marker.args):
         # Get the custom port.
         try:
@@ -26,8 +29,11 @@ def moss_runner(request):
             index = marker.args.index("--port")
         port = int(marker.args[index + 1])
     else:
+        # Otherwise grab an unoccupied port
         port = get_free_port()
-        args.extend(["-p", port]) # default to a free port
+        # Note: override_moss_port is not intended to affect the server's port, but rather the client's.
+
+    args.extend(["-p", port])
 
     if marker is not None:
         args.extend(marker.args)
@@ -46,7 +52,6 @@ def moss_runner(request):
     no_tcp_check = request.node.get_closest_marker("no_tcp_check")
     if not no_tcp_check:
         # Wait until server is actually listening (very important!)
-        # base_url = f"http://127.0.0.1:{port}"
         for _ in range(20):
             try:
                 with socket.create_connection(("127.0.0.1", port), timeout=0.1):
@@ -62,9 +67,13 @@ def moss_runner(request):
 
 
 @pytest.fixture(scope="class")
-def moss_port(moss_runner):
-    s = moss_runner.servers[0]
-    yield s.port
+def moss_port(request, moss_runner):
+    marker = request.node.get_closest_marker("override_moss_port")
+    if marker is not None and len(marker.args) == 1:
+        yield marker.args[0]
+    else:
+        s = moss_runner.servers[0]
+        yield s.port
 
 
 @pytest.fixture(scope="class")
