@@ -167,7 +167,10 @@ class TimeoutBufferedReader:
         self._pastreadbuffer = bytearray()
         self._last_read_time = time.monotonic()
         self.default_size = default_size
-        self.connection.setblocking(0) # set non-blocking to use with select
+        self.is_ssl = isinstance(connection, ssl.SSLSocket)
+        # Only set non-blocking for non-SSL sockets; select() doesn't work well with SSL
+        if not self.is_ssl:
+            self.connection.setblocking(0) # set non-blocking to use with select
 
     def _wait_for_data(self, remaining_timeout):
         """Block via select until data or timeout"""
@@ -193,7 +196,20 @@ class TimeoutBufferedReader:
         self._wait_for_data(remaining)
 
         # Now safe to read (data pending)
-        chunk = self.rfile.read(size if size > 0 else self.default_size)
+        # For SSL sockets, use direct recv() with retry on SSLWantReadError
+        if self.is_ssl:
+            try:
+                chunk = self.connection.recv(size if size > 0 else self.default_size)
+            except ssl.SSLWantReadError:
+                # SSL needs more data, wait and retry
+                self._wait_for_data(self.timeout)
+                try:
+                    chunk = self.connection.recv(size if size > 0 else self.default_size)
+                except ssl.SSLWantReadError:
+                    # Still no data, return empty (will trigger EOF handling)
+                    chunk = b''
+        else:
+            chunk = self.rfile.read(size if size > 0 else self.default_size)
         if chunk:
             logger.debug(f"read {len(chunk)} bytes: {chunk[:100]}")
             self._last_read_time = time.monotonic()
@@ -786,20 +802,9 @@ class MossRequestHandler(BaseHTTPRequestHandler):
             logger.info(f"timeout: {e}")
             pass
         finally:
-            try:
-                if self.is_ssl:
-                    self.debug("closing ssl connection...")
-                    self.connection.unwrap()
-            except BrokenPipeError as e:
-                self.handle_anomaly(f"{e.__class__.__name__}: {e}", tags=["insecure-ssl-cert", "signer-not-trusted"])
-            except ssl.SSLError as e:
-                self.handle_anomaly(
-                    f"ssl error 2 ({e})",
-                    tags=["ssl-domain-enumeration", "insecure-ssl-cert", "cert-subject-name-does-not-match-hostname", "close-connection"]
-                )
-            except Exception as e:
-                self.handle_anomaly(f"{e.__class__.__name__}: {e} (during ssl unwrap)")
-                
+            # Note: Removed ssl.unwrap() call - it interferes with response being sent to client
+            # SSL sockets will be properly closed by self.finish()
+            
             # Safely clear buffers and close the connection
             self.finish()
 
