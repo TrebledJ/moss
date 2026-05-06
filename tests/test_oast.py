@@ -117,6 +117,5 @@ class TestCorrelation:
         srv = moss_runner.servers[0]
         # Wait for event and check correlation_id is None
         event = srv.wait(2)
-        print(f"DEBUG: Event for no match test: {event}")
         assert event is not None
         assert event.get("correlation_id") is None

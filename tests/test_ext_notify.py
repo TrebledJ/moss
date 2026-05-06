@@ -101,3 +101,6 @@ class TestNotifyOnSpecific:
         assert r.status_code != 0
         time.sleep(2)
         assert len(CAPTURED_REQUESTS) == 1
+
+        payload = json.loads(CAPTURED_REQUESTS[0]["body"])
+        assert "/?secret=yes" in payload["content"]
