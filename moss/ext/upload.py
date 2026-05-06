@@ -31,21 +31,53 @@ def _field(default, group=None, doc="", metadata={}, flags=[], choices=[], **kwa
 class UploadServerMixin:
     upload_path: str = _field("/upload", group=GROUP, doc="HTTP path which accepts upload payloads")
     upload_to: str = _field(None, group=GROUP, doc="Store uploaded files in this directory")
-    upload_inmem_max_size: int = _field(1 * 1024**2, group=GROUP, doc="Max file size for files cached in-memory. Defaults to 1 MiB")
-    upload_max_size: int = _field(2 * 1024**3, group=GROUP, doc="Max file size accepted for files stored on disk. Defaults to 2 GiB")
+    upload_max_size: int = _field(None, group=GROUP, doc="Max file size accepted for files stored on disk. Defaults to 1 MiB (for in-memory) or MOSS' max body size (for filesystem)")
 
     def __post_init__(self):
         if self.upload_to and not (p := Path(self.upload_to)).exists():
             self.logger.warning(f"upload path did not exist, creating path... (mkdir {self.upload_to})")
             p.mkdir(parents=True, exist_ok=True)
         self.uploaded_files = {}
+        self.upload_store_type = 'file' if self.upload_to else 'memory'
+
+        # If storing in-memory, max size defaults to 1 MiB.
+        # If storing in filesystem, no max size (handled by MOSS' max body size).
+        self.upload_max_size = self.upload_max_size or (1 * 1024**2 if self.upload_store_type == 'memory' else None)
         super().__post_init__()
 
     def list_uploaded_files(self):
         return list(self.uploaded_files)
     
-    def get_uploaded_file(self, file):
-        return self.uploaded_file.get(file, None)
+    def get_uploaded_file(self, filename: str) -> bytes:
+        if filename in self.uploaded_file:
+            return self.uploaded_file[filename]
+        
+        with open(filename, "rb") as f:
+            data = f.read()
+            return data
+    
+        raise FileNotFoundError(f"could not find file: {filename}")
+    
+    def check_upload_limit(self, length: int):
+        if self.upload_max_size:
+            return length <= self.upload_max_size
+        else:
+            return True
+
+    def upload_file(self, filename: str, content: bytes):
+        if self.upload_store_type == 'memory':
+            self.uploaded_files[filename] = content
+            return True, filename
+        elif self.upload_store_type == 'file':
+            path = get_unique_filename(self.upload_to, filename)
+            try:
+                with open(path, "wb") as f:
+                    f.write(content)
+                return True, path
+            except (FileNotFoundError, PermissionError) as e:
+                return False, f"Encountered {e.__class__.__name__}: {e}"
+        else:
+            return False, f'unknown upload store type: {self.upload_store_type}'
 
 class UploadProcessor:
     def get_services(self, server):
@@ -63,34 +95,23 @@ class UploadProcessor:
         filename = req.headers['x-file-name']
         if not filename:
             self.printerr(f"Got POST {req.server.upload_path} request, but no filename")
-            return
+            req.send_response_full(400)
+            return True
+        
         filename = sanitise_filename(filename)
-
         length = len(req.body)
-        if length <= req.server.upload_inmem_max_size:
-            req.server.uploaded_files[filename] = req.body
-        else:
-            pass
-            # Not an error, since we allowed uploads to be stored in file, especially for larger files.
-
-        req.send_response_full(201, content=b'ok', mime='text/plain')
-
-        if not req.server.upload_to:
-            return True
-        
-        if length > req.server.upload_max_size:
+        if not req.server.instance.check_upload_limit(length):
             self.printerr(f"Incoming file exceeded max file size ({length} > {req.server.upload_max_size})")
+            req.send_response_full(413) # Content too large.
             return True
         
-        path = get_unique_filename(req.server.upload_to, filename)
-        try:
-            with open(path, "wb") as f:
-                f.write(req.body)
-            self.logger.info(f"Saved {len(req.body)} bytes to {path}")
-        except (FileNotFoundError, PermissionError) as e:
-            self.printerr(f"Encountered {e.__class__.__name__}: {e}")
-            return True
-            
+        ok, msg = req.server.instance.upload_file(filename, req.body)
+        if ok:
+            req.send_response_full(201, content=b'ok', mime='text/plain')
+            self.logger.info(f"Saved {len(req.body)} bytes to {msg}")
+        else:
+            req.send_response_full(500, content=msg.encode(), mime='text/plain')
+            self.printerr(msg)
         return True
 
 def get_unique_filename(path, filename):
@@ -102,7 +123,7 @@ def get_unique_filename(path, filename):
 def random_id(n: int):
     return "".join(random.sample("abcdefghijkmnopqrstuvwxyz0123456789", n))
 
-DEFAULT_CHAR = b"_"
+DEFAULT_CHAR = ord("_")
 WHITELIST = (string.ascii_letters + string.digits + "_-.").encode()
 
 def sanitise_filename(s: bytes | str) -> str:
