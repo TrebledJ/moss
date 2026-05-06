@@ -514,10 +514,11 @@ class MossRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def is_match(self, requestline, body):
-        f_str = (self.server.filter_str or "").encode()
-        if not f_str:
-            return True
-        return f_str in requestline.encode() or f_str in body
+        r = self.server.filter_regex
+        if not r:
+            return None
+        
+        return r.search(requestline) or r.search(body.decode('utf-8', errors='replace'))
 
     def extract_correlation_id(self, requestline, headers, body):
         r = self.server.correlation_regex
@@ -911,7 +912,7 @@ class HttpMossServer:
     certfile: str = _field(None, group="https", doc="Public key")
     keyfile: str = _field(None, group="https", doc="Private key")
 
-    filter_str: str = _field(None, group="matching", flags=["--filter"], doc="Match request line and body")
+    filter_regex: str = _field(None, group="matching", flags=["--filter"], doc="Match request line and body")
     correlation_regex: str = _field('', group="matching", flags=["--correlation", "-r"], doc="Extract correlation ID based on regex, this works independently of the filter")
 
     enable_blocking: bool = _field(False, group="security", flags=["--block-scanners"], doc="Enables automatic blocking of IPs which behave like scanners. To unblock, restart the server lol")
@@ -925,6 +926,7 @@ class HttpMossServer:
         server.queue = self.queue = queue.Queue(maxsize=QUEUE_MAX_SIZE)
         for attr, value in params:
             setattr(server, attr, value)
+        server.instance = self
         server.running = False
         server.ratelimiter = self.RateLimiterClass()
         # super().__post_init__() # No super post init. This class should be last one in a mixin chain.
@@ -936,6 +938,7 @@ class HttpMossServer:
             k, v = h.split(':', 1)
             self.headers.append((k.strip(), v.strip()))
 
+        self.filter_regex = re.compile(self.filter_regex) if self.filter_regex else None
         self.correlation_regex = re.compile(self.correlation_regex) if self.correlation_regex else None
 
         if self.server_header == 'random':
@@ -959,7 +962,7 @@ class HttpMossServer:
                 sys.exit(1)
 
         printe(f"{CLR_GRN}Server listening on {self.host}:{self.port}{CLR_RST}")
-        if self.filter_str: printe(f"{CLR_YLW}Filter active:{CLR_RST} {self.filter_str}")
+        if self.filter_regex: printe(f"{CLR_YLW}Filter regex:{CLR_RST} {self.filter_regex}")
         if self.correlation_regex: printe(f"{CLR_YLW}Correlation ID regex:{CLR_RST} {self.correlation_regex}")
 
     @classmethod
