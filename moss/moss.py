@@ -516,9 +516,9 @@ class MossRequestHandler(BaseHTTPRequestHandler):
     def is_match(self, requestline, body):
         r = self.server.filter_regex
         if not r:
-            return None
+            return True
         
-        return r.search(requestline) or r.search(body.decode('utf-8', errors='replace'))
+        return bool(r.search(requestline) or r.search(body.decode('utf-8', errors='replace')))
 
     def extract_correlation_id(self, requestline, headers, body):
         r = self.server.correlation_regex
