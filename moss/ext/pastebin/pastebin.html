@@ -113,7 +113,7 @@ async function encryptAndSend() {
   status.className = "";
 
   const textarea = document.getElementById("message");
-  const plaintext = textarea.value.trim();
+  const plaintext = textarea.value;
 
   if (!plaintext) {
     status.textContent = "Please enter some text first.";
