@@ -1,7 +1,7 @@
 import pytest
 import gzip
 import json
-import os
+from pathlib import Path
 import time
 
 
@@ -122,8 +122,9 @@ class TestJsonlStdout:
 JSONL_FILE = "test_output.jsonl"
 
 def jsonl_cleanup():
-    if os.path.exists(JSONL_FILE):
-        os.remove(JSONL_FILE)
+    p = Path(JSONL_FILE)
+    if p.exists():
+        p.unlink()
 
 def jsonl_make_request(http_client, path):
     # Remove file before testing the request
@@ -140,7 +141,7 @@ class TestJsonlFile:
         # Make sure to call .poll() so that events are handled.
         moss_runner.poll(timeout_per_server=1.0)
         try:
-            assert os.path.exists(JSONL_FILE)
+            assert Path(JSONL_FILE).exists()
         finally:
             jsonl_cleanup()
 
@@ -149,7 +150,7 @@ class TestJsonlFile:
         jsonl_make_request(http_client, JSONL_TEST_PATH)
         moss_runner.poll(timeout_per_server=1.0)
         try:
-            assert os.path.exists(JSONL_FILE)
+            assert Path(JSONL_FILE).exists()
             with open(JSONL_FILE, "r") as f:
                 line = f.readline()
                 data = json.loads(line)
@@ -167,7 +168,7 @@ class TestJsonlFileWithFilter:
         jsonl_make_request(http_client, JSONL_TEST_PATH)
         moss_runner.poll(timeout_per_server=1.0)
         try:
-            assert os.path.exists(JSONL_FILE)
+            assert Path(JSONL_FILE).exists()
             with open(JSONL_FILE, "r") as f:
                 line = f.readline()
                 data = json.loads(line)
@@ -181,7 +182,7 @@ class TestJsonlFileWithFilter:
         jsonl_make_request(http_client, JSONL_TEST_PATH)
         moss_runner.poll(timeout_per_server=1.0)
         try:
-            assert os.path.exists(JSONL_FILE) is False
+            assert Path(JSONL_FILE).exists() is False
         finally:
             jsonl_cleanup()
 

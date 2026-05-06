@@ -39,11 +39,12 @@ The general intended use is to host this on a VPS or— in case you're testing a
     - [x] upload files
 - [x] store settings in a **config file** to keep your command line clean
 - [x] **blocks** nosy scanners to reduce noise
+- [x] DoS protection 
 
 Additional Perks:
 
 - [x] zero dependencies! (pure Python)[^deps]
-- [x] single Python file (for OAST), easy to setup, easy to configure, easy to hack
+- [x] single Python file (for OAST), easy to setup, easy to configure, easy to hack(?)
 - [x] pretty ANSI colours!
 
 [^deps]: Zero dependencies... with the exception of   an optional `jsonschema` package used in stealthnet for validating profiles, mainly for the case where you're developing custom profiles.
@@ -652,9 +653,9 @@ I still use interactsh; it's a great tool boasting many integrations. But tools 
 > This code is provided "as is" without warranty of any kind, express or implied, including but not limited to the warranties of merchantability, fitness for a particular purpose, and noninfringement. In no event shall the authors or copyright holders be liable for any claim, damages, or other liability, whether in an action of contract, tort, or otherwise, arising from, out of, or in connection with the software or the use or other dealings in the software. Use at your own risk.
 
 
-## Roadmap
+## TODOs
 
-- [ ] project: tests
+- [x] project: tests
 - [ ] project: automation examples
 - [ ] automation(correlation): issue server-to-client correlation IDs in HTTP response
 - [ ] automation(correlation): register filters/matchers dynamically, and await for match
@@ -664,7 +665,7 @@ I still use interactsh; it's a great tool boasting many integrations. But tools 
 - [ ] protocol: support HTTP/2 requests
 - [ ] protocol: support and comply with HTTP proxy
 - [ ] protocol: support and comply with HTTPS Tunnel proxy
-- [ ] option: filter matches with regex
+- [x] option: filter matches with regex
 - [ ] ui: toggle detailed/compressed views with keyboard input
 - [ ] ui: anchored status bar, displaying stats, e.g. number of filtered requests, number of anomalies
 - [ ] misc: better structured reporting of anomalies and socket-level analysis?
