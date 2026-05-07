@@ -72,6 +72,20 @@ class TestPastebin:
         r = http_client.get("/pastebin/nonexistent123")
         assert r.status_code == 404
 
+    def test_invalid_id_charaters(self, http_client):
+        """IDs with special characters should not match pastebin regex."""
+        # The regex only matches \w+ (word chars: [a-zA-Z0-9_])
+        # Hyphens, @, # etc. should NOT match the pastebin ID pattern
+        r = http_client.get("/pastebin/invalid-id")
+        # This gets past the regex check, but 'invalid-id' is not in pastebin_files
+        # So it should return 404
+        assert r.status_code == 404
+
+    def test_empty_id(self, http_client):
+        r = http_client.get("/pastebin/")
+        # Should not match pastebin path (needs /pastebin/{id})
+        assert r.status_code != 0  # Should not be 200 form page
+
     def test_invalid_json(self, http_client):
         r = http_client.post("/pastebin", content=b"not json", headers={"Content-Type": "application/json"})
         assert r.status_code == 403

@@ -65,6 +65,11 @@ class PastebinProcessor:
             req.send_response_full(200, content=content)
             return True
         
+        # Path starts with pastebin path but has invalid ID format
+        elif req.path.startswith(req.server.pastebin_path + "/"):
+            req.send_response_full(404)
+            return True
+        
     def do_POST(self, req):
         if req.path != req.server.pastebin_path:
             return
