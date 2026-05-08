@@ -1543,9 +1543,9 @@ class MossBuilder:
             formatter_class=Formatter,
             fromfile_prefix_chars='@',
         )
-
         # Add -e here so that it shows up in help, even though it would be processed before.
         parser.add_argument("--ext", "-e", type=str, default=[], nargs='+', help="Load extensions (Python files). Works with bash file glob/expansion, e.g. -e ext/{file,upload}.py")
+        parser.add_argument("--version", "-V", action="version", version=f"%(prog)s {__version__}")
         parser.add_argument('-v', action='count', default=0, help='Verbosity. -v for INFO, -vv for DEBUG messages.')
 
         # Add all CLI args from dataclasses.
@@ -1575,6 +1575,9 @@ class MossBuilder:
         self.make_server(ServerClass, RequestHandlerClasss)
         
         namespace = self.parse_args()
+
+        print(f"Running moss version {__version__}")
+
         runner = self.make_runner(namespace)
         return runner
 
