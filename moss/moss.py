@@ -74,7 +74,7 @@ WEBDAV_COMMANDS = [
 SOCKET_TIMEOUT = 30
 
 TIMEOUT_FOR_FIRST_BYTE = 8 # Timeout for the first byte
-TIMEOUT_FOR_NEWLINE = 5    # Timeout when reading a line
+TIMEOUT_FOR_NEWLINE = 5    # Timeout when reading a line (prevent slowloris)
 TIMEOUT_FOR_BODY = 10      # Timeout for the request body
 # TIMEOUT_FOR_REQUEST = 30   # Timeout for the entire request
 
@@ -171,6 +171,12 @@ class TimeoutBufferedReader:
         # Only set non-blocking for non-SSL sockets; select() doesn't work well with SSL
         if not self.is_ssl:
             self.connection.setblocking(0) # set non-blocking to use with select
+    
+    def new_request(self):
+        self._pastreadbuffer = bytearray()
+
+    def is_buffer_empty(self):
+        return len(self._pastreadbuffer) == 0 and len(self._buffer) == 0
 
     def _wait_for_data(self, remaining_timeout):
         """Block via select until data or timeout"""
@@ -226,9 +232,11 @@ class TimeoutBufferedReader:
                 del self._buffer[:nl_pos + 1]
                 return line
 
-            # Check total line timeout
+            # Use longer timeout if buffer is empty (waiting for new request on keep-alive)
+            # Use shorter timeout if we have partial data (prevent slowloris)
+            current_timeout = self.timeout if len(self._buffer) == 0 else self.line_timeout
             elapsed = time.monotonic() - start
-            if elapsed >= self.line_timeout:
+            if elapsed >= current_timeout:
                 raise TimeoutError("Line read timeout")
 
             chunk = self._read_chunk(self.default_size if limit < 0 else limit - len(self._buffer))
@@ -243,7 +251,7 @@ class TimeoutBufferedReader:
                 self._buffer.clear()
                 self._pastreadbuffer += self._buffer
                 return line
-
+            
             self._buffer.extend(chunk)
 
     def read(self, size=-1):
@@ -579,6 +587,7 @@ class MossRequestHandler(BaseHTTPRequestHandler):
         + set a lower requestline length limit
         """
         self.debug('handle one request')
+        self.rfile.new_request()
         self.request_timestamp = self.log_date_time_string()
         try:
             self.raw_requestline = self.rfile.readline(MAX_REQUESTLINE_LENGTH + 1)
@@ -614,10 +623,16 @@ class MossRequestHandler(BaseHTTPRequestHandler):
             self.send_error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
             self.close_connection = True
         except TimeoutError as e:
-            #a read or a write timed out.  Discard this connection
+            # A read or write timed out.
+            # If this is a keep-alive connection waiting for next request, it's normal (client closed/idle).
+            # Only log as anomaly if we actually read some data (partial request)
             self.debug(f"Request timed out: {e}")
-            # self.handle_anomaly(f"request timed out", details=bytes(self.rfile._buffer))
-            self.handle_anomaly(f"request timed out", details=bytes(self.rfile._pastreadbuffer + self.rfile._buffer))
+            if self.rfile.is_buffer_empty():
+                # No data was read - client just went idle or closed connection gracefully
+                self.debug("Keep-alive connection timed out (no data)")
+            else:
+                # Partial data was read - this is anomalous
+                self.handle_anomaly(f"request timed out", details=bytes(self.rfile._pastreadbuffer + self.rfile._buffer))
             self.close_connection = True
             return
         finally:
