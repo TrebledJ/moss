@@ -43,7 +43,6 @@ def moss_runner(request):
         print('enabling https')
         args.extend(["--https", "--certfile", "tests/data/server.crt", "--keyfile", "tests/data/server.key"])
 
-    print(f"Running moss version {moss.__version__}")
     builder = moss.MossBuilder(args)
     runner = builder.cli()
     runner.serve()
