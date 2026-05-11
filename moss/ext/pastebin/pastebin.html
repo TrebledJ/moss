@@ -53,59 +53,91 @@
   <a id="link" href="javascript:void(0)"></a>
 </div>
 
+<div id="https-warning" style="background:#fff3cd;padding:12px;border-radius:6px;margin-top:1rem;display:none;">
+  <strong>Security Notice:</strong> This server supports HTTPS.
+  <a id="https-link" href="">Click here to access via HTTPS</a> for better encryption (AES-GCM with crypto.subtle).
+</div>
+
 <script>
-// ────────────────────────────────────────────────
-//   Utility: base64 helpers
-// ────────────────────────────────────────────────
+const httpsLink = "{{HTTPS_LINK}}";
+if (httpsLink) {
+  const warning = document.getElementById('https-warning');
+  const link = document.getElementById('https-link');
+  warning.style.display = 'block';
+  link.href = httpsLink;
+}
+</script>
+<script>
+// Conditionally load aes.js only if crypto.subtle is NOT available
+if (typeof crypto === 'undefined' || !crypto.subtle) {
+  (async () => {
+      await import("{{PATH}}/aes.js");
+      console.log("aes.js loaded");
+  })();
+}
+</script>
+<script>
+function waitForAesJs(callback, timeout = 5000) {
+    const start = Date.now();
+    const check = () => {
+        if (window.aesjs) {
+            callback(window.aesjs);
+            return;
+        }
+        if (Date.now() - start > timeout) {
+            console.error('aes.js not loaded');
+            return;
+        }
+        setTimeout(check, 50);
+    };
+    check();
+}
+
+async function sha256(message) {
+  if (typeof crypto !== 'undefined' && crypto.subtle) {
+    const encoder = new TextEncoder();
+    const data = encoder.encode(message);
+    const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+    return new Uint8Array(hashBuffer);
+  }
+  const encoder = new TextEncoder();
+  const data = encoder.encode(message);
+  const hash = new Uint8Array(32);
+  for (let i = 0; i < data.length; i++) {
+    hash[i % 32] = (hash[i % 32] + data[i]) % 256;
+  }
+  return hash;
+}
+
+async function deriveKey(password, salt, iterations = 400000) {
+  const passwordBytes = new TextEncoder().encode(password);
+  const saltBytes = salt || new Uint8Array(16);
+  
+  const combined = new Uint8Array(passwordBytes.length + saltBytes.length);
+  combined.set(passwordBytes);
+  combined.set(saltBytes, passwordBytes.length);
+  
+  const hash = await sha256(combined);
+  
+  return hash.slice(0, 16);
+}
+
 function bufferToBase64(buffer) {
   const bytes = new Uint8Array(buffer);
   let binary = '';
-  // Need to loop to avoid "Maximum call stack exceeded" error
   for (let i = 0; i < bytes.length; i += 8192) {
     binary += String.fromCharCode.apply(null, bytes.subarray(i, i + 8192));
   }
   return btoa(binary);
 }
 
-function base64ToBuffer(base64) {
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i);
-  }
-  return bytes.buffer;
+function base64ToBuf(b64) {
+  const bin = atob(b64.trim());
+  const arr = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+  return arr;
 }
 
-// ────────────────────────────────────────────────
-//   Derive AES-GCM key from password + salt
-// ────────────────────────────────────────────────
-async function deriveKey(password, salt) {
-  const enc = new TextEncoder();
-  const keyMaterial = await crypto.subtle.importKey(
-    "raw",
-    enc.encode(password),
-    { name: "PBKDF2" },
-    false,
-    ["deriveBits", "deriveKey"]
-  );
-
-  return crypto.subtle.deriveKey(
-    {
-      name: "PBKDF2",
-      salt,
-      iterations: 400000,           // reasonably secure in 2025
-      hash: "SHA-256"
-    },
-    keyMaterial,
-    { name: "AES-GCM", length: 256 },
-    true,                           // we don't need to export it
-    ["encrypt"]
-  );
-}
-
-// ────────────────────────────────────────────────
-//   Main encrypt + send logic
-// ────────────────────────────────────────────────
 async function encryptAndSend() {
   const link = document.getElementById("link");
   const status = document.getElementById("status");
@@ -123,15 +155,21 @@ async function encryptAndSend() {
 
   let password;
   let key = "{{SAVE_PSWD}}";
-  if (key) {
+  let hardcodedPswd = "{{HARDCODED_PSWD}}";
+  
+  if (hardcodedPswd) {
+    password = hardcodedPswd;
+  } else if (key) {
     password = localStorage.getItem(key) ?? null;
   }
+  
   if (!password) {
     password = prompt("Password:", "");
-    if (key) {
+    if (key && password) {
       localStorage.setItem(key, password);
     }
   }
+  
   if (!password) {
     status.textContent = "Encryption cancelled (no password entered).";
     status.className = "error";
@@ -145,33 +183,78 @@ async function encryptAndSend() {
     status.textContent = "Encrypting...";
     status.className = "";
 
-    // 1. Generate random salt & IV
-    const salt = crypto.getRandomValues(new Uint8Array(16));
-    const iv   = crypto.getRandomValues(new Uint8Array(12));
+    const useGCM = typeof crypto !== 'undefined' && crypto.subtle;
+    
+    if (useGCM) {
+      const salt = crypto.getRandomValues(new Uint8Array(16));
+      const iv = crypto.getRandomValues(new Uint8Array(12));
+      const keyBytes = await deriveKey(password, salt);
+      const encoder = new TextEncoder();
+      const plaintextBytes = encoder.encode(plaintext);
+      
+      const encryptedBuffer = await crypto.subtle.encrypt(
+        { name: "AES-GCM", iv: iv },
+        await crypto.subtle.importKey("raw", keyBytes, "AES-GCM", false, ["encrypt"]),
+        plaintextBytes
+      );
+      
+      const encryptedBytes = new Uint8Array(encryptedBuffer);
+      const ciphertext = encryptedBytes.slice(0, -16);
+      const tag = encryptedBytes.slice(-16);
+      
+      const payload = {
+        type: "aes-gcm",
+        iv: bufferToBase64(iv),
+        salt: bufferToBase64(salt),
+        data: bufferToBase64(ciphertext),
+        tag: bufferToBase64(tag)
+      };
+      
+      await sendToServer(payload, status, link);
+    } else {
+      waitForAesJs(async (aesjs) => {
+        try {
+          const salt = new Uint8Array(Array.from({length: 16}, () => Math.floor(Math.random() * 256)));
+          const iv = new Uint8Array(Array.from({length: 16}, () => Math.floor(Math.random() * 256)));
+          const keyBytes = await deriveKey(password, salt);
+          const aesCbc = new aesjs.ModeOfOperation.cbc(keyBytes, iv);
+          const encoder = new TextEncoder();
+          const plaintextBytes = encoder.encode(plaintext);
+      
+          const paddedLength = Math.ceil(plaintextBytes.length / 16) * 16;
+          const padded = new Uint8Array(paddedLength);
+          padded.set(plaintextBytes);
+          const padValue = paddedLength - plaintextBytes.length;
+          for (let i = plaintextBytes.length; i < paddedLength; i++) {
+            padded[i] = padValue;
+          }
+      
+          const encrypted = aesCbc.encrypt(Array.from(padded));
+      
+          const payload = {
+            type: "aes-cbc",
+            iv: bufferToBase64(iv),
+            salt: bufferToBase64(salt),
+            data: bufferToBase64(new Uint8Array(encrypted))
+          };
+      
+          await sendToServer(payload, status, link);
+        } catch (err) {
+          console.error(err);
+          status.textContent = "Error: " + (err.message || "Encryption / network failure");
+          status.className = "error";
+        }
+      });
+    }
+  } catch (err) {
+    console.error(err);
+    status.textContent = "Error: " + (err.message || "Encryption / network failure");
+    status.className = "error";
+  }
+}
 
-    // 2. Derive key
-    const key = await deriveKey(password, salt);
-
-    // 3. Encrypt
-    const enc = new TextEncoder();
-    const encryptedBuffer = await crypto.subtle.encrypt(
-      {
-        name: "AES-GCM",
-        iv,
-        tagLength: 128
-      },
-      key,
-      enc.encode(plaintext)
-    );
-
-    // 4. Prepare payload
-    const payload = {
-      iv:   bufferToBase64(iv),
-      salt: bufferToBase64(salt),
-      data: bufferToBase64(encryptedBuffer)
-    };
-
-    // 5. Send to server
+async function sendToServer(payload, status, link) {
+  try {
     const response = await fetch("{{PATH}}", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -188,11 +271,8 @@ async function encryptAndSend() {
     status.className = "success";
     link.href = result.url;
     link.textContent = result.url;
-
   } catch (err) {
-    console.error(err);
-    status.textContent = "Error: " + (err.message || "Encryption / network failure");
-    status.className = "error";
+    throw err;
   }
 }
 </script>

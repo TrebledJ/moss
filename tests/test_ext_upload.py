@@ -12,7 +12,7 @@ def random_id(n: int = 8):
     return "".join(random.sample("abcdefghijkmnopqrstuvwxyz0123456789", n))
 
 
-@pytest.mark.moss_args("-e", "upload", "-vv")
+@pytest.mark.moss_args("-e", "upload")
 class TestUploadServer:
     """Basic upload server tests."""
 
@@ -32,6 +32,21 @@ class TestUploadServer:
     def test_upload_no_filename(self, http_client):
         r = http_client.post("/upload", content=b"Test content")
         assert 400 <= r.status_code < 500
+
+    def test_upload_store_type_memory(self, moss_runner):
+        for h in moss_runner.handlers:
+            if hasattr(h, "upload_store_type"):
+                assert h.upload_store_type == "memory"
+                break
+
+    def test_upload_file_memory(self, http_client):
+        r = http_client.post(
+            "/upload",
+            content=b"Memory stored content",
+            headers={"X-File-Name": "mem_test.txt"},
+        )
+        assert r.status_code == 201
+
 
 
 @pytest.mark.moss_args("-e", "upload", "--upload-to", str(UPLOAD_DIR))
@@ -117,25 +132,6 @@ class TestUploadServerWithLimit:
         time.sleep(1)
 
         assert not (UPLOAD_DIR / filename).exists()
-
-
-@pytest.mark.moss_args("-e", "upload")
-class TestUploadServerMemory:
-    """Upload server with in-memory storage tests."""
-
-    def test_upload_store_type_memory(self, moss_runner):
-        for h in moss_runner.handlers:
-            if hasattr(h, "upload_store_type"):
-                assert h.upload_store_type == "memory"
-                break
-
-    def test_upload_file_memory(self, http_client):
-        r = http_client.post(
-            "/upload",
-            content=b"Memory stored content",
-            headers={"X-File-Name": "mem_test.txt"},
-        )
-        assert r.status_code == 201
 
 
 @pytest.mark.moss_args("-e", "upload", "--upload-to", str(UPLOAD_DIR))

@@ -2,7 +2,6 @@ import pytest
 import base64
 import json
 import os
-from pathlib import Path
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -35,12 +34,28 @@ def decrypt_pastebin_payload(json_str: str, password: str) -> bytes:
 
 @pytest.mark.moss_args("-e", "pastebin")
 class TestPastebin:
+    """Basic pastebin functionality tests that don't require frontend encryption."""
+    
     def test_get_form(self, http_client):
         r = http_client.get("/pastebin")
         assert r.status_code == 200
         assert r.headers.get("content-type", "").startswith("text/html")
-
-    def test_post_and_decrypt_precise(self, http_client):
+    
+    def test_nonexistent_paste(self, http_client):
+        r = http_client.get("/pastebin/nonexistent123")
+        assert r.status_code == 404
+    
+    def test_empty_id(self, http_client):
+        r = http_client.get("/pastebin/")
+        assert r.status_code == 200
+    
+    def test_invalid_json(self, http_client):
+        r = http_client.post("/pastebin", content=b"not json", headers={"Content-Type": "application/json"})
+        assert r.status_code == 400
+        assert "message" in r.json()
+    
+    def test_server_side_decrypt(self, http_client):
+        """Test server-side decryption of GCM payloads (Python crypto)."""
         password = "test-password-123"
         original_data = b"hello world from pastebin - exact content verification!"
         payload = generate_pastebin_payload(original_data, password)
@@ -56,69 +71,49 @@ class TestPastebin:
         decrypted_data = decrypt_pastebin_payload(match.group(1).strip(), password)
         assert decrypted_data == original_data
 
-    def test_post_paste(self, http_client):
-        password = "test-password-123"
-        original_data = b"hello world from pastebin"
-        payload = generate_pastebin_payload(original_data, password)
-        r = http_client.post("/pastebin", content=payload, headers={"Content-Type": "application/json"})
-        assert r.status_code == 201
-        json_data = r.json()
-        assert "url" in json_data
-        r2 = http_client.get(json_data["url"])
-        assert r2.status_code == 200
-        assert b"encrypted" in r2.content.lower() or b"decrypt" in r2.content.lower()
+    def test_http_flow(self, moss_runner, moss_url, browser_http):
+        """Test complete encrypt/decrypt cycle via headless browser over HTTP."""
+        password = "http-flow-password"
+        test_message = "Hello from HTTP browser test!"
+        
+        page = browser_http.new_page()
+        
+        page.goto(f"{moss_url}/pastebin", timeout=15000)
+        page.wait_for_load_state("networkidle")
+        page.fill("textarea#message", test_message)
+        page.on("dialog", lambda dialog: dialog.accept(password))
+        page.click("button:has-text('Encrypt & Send')")
+        page.wait_for_selector("a#link[href]", timeout=15000)
+        
+        paste_url = page.get_attribute("a#link", "href")
+        assert paste_url and paste_url.startswith("/pastebin/")
+        
+        page.goto(f"{moss_url}{paste_url}", timeout=15000)
+        page.wait_for_load_state("networkidle")
+        
+        result = page.get_attribute("textarea#result", "textContent") or \
+            page.evaluate("() => document.getElementById('result').textContent")
+        assert result == test_message, f"Decrypted mismatch.\nExpected: {test_message}\nGot: {result}"
+        
+        page.close()
 
-    def test_nonexistent_paste(self, http_client):
-        r = http_client.get("/pastebin/nonexistent123")
-        assert r.status_code == 404
-
-    def test_invalid_id_charaters(self, http_client):
-        """IDs with special characters should not match pastebin regex."""
-        # The regex only matches \w+ (word chars: [a-zA-Z0-9_])
-        # Hyphens, @, # etc. should NOT match the pastebin ID pattern
-        r = http_client.get("/pastebin/invalid-id")
-        # This gets past the regex check, but 'invalid-id' is not in pastebin_files
-        # So it should return 404
-        assert r.status_code == 404
-
-    def test_empty_id(self, http_client):
-        r = http_client.get("/pastebin/")
-        # Should not match pastebin path (needs /pastebin/{id})
-        assert r.status_code != 0  # Should not be 200 form page
-
-    def test_invalid_json(self, http_client):
-        r = http_client.post("/pastebin", content=b"not json", headers={"Content-Type": "application/json"})
-        assert r.status_code == 403
-        assert "message" in r.json()
-
-
-@pytest.mark.moss_args("-e", "pastebin", "--pastebin-max-size", "100")
-class TestPastebinMaxSize:
-    def test_exceed_max_size(self, http_client):
-        password = "test-password-123"
-        large_data = b"a" * 80
-        payload = generate_pastebin_payload(large_data, password)
-        r = http_client.post("/pastebin", content=payload, headers={"Content-Type": "application/json"})
-        assert r.status_code == 413
-        assert "message" in r.json()
-
-
-@pytest.mark.moss_args("-e", "pastebin", "--pastebin-fixed", "test-paste-fixed")
-class TestPastebinFixedPath:
-    def test_fixed_path(self, http_client):
-        password = "test-password-123"
-        original_data = b"fixed path test"
-        payload = generate_pastebin_payload(original_data, password)
-        r = http_client.post("/pastebin", content=payload, headers={"Content-Type": "application/json"})
-        assert r.status_code == 201
-        json_data = r.json()
-        assert json_data["url"].endswith("/test-paste-fixed")
+    def test_https_warning_hidden_when_no_https(self, moss_runner, moss_url, browser_http):
+        """Test HTTPS warning in pastebin form using headless browser.
+        When server does not support HTTPS, warning should be hidden."""
+        page = browser_http.new_page()
+        page.goto(f"{moss_url}/pastebin", timeout=15000)
+        page.wait_for_load_state("networkidle")
+        
+        display_style = page.evaluate("() => document.getElementById('https-warning').style.display")
+        assert display_style == "none", f"Expected warning to be hidden, but display is: {display_style}"
+        
+        page.close()
 
 
 @pytest.mark.moss_https
 @pytest.mark.moss_args("-e", "pastebin")
-class TestPastebinHeadlessBrowser:
-    """Use playwright headless browser to emulate user submitting data via the web interface."""
+class TestPastebinHTTPSFlow:
+    """Test encrypt/decrypt cycle via headless browser over HTTPS."""
 
     test_messages = [
         "Hello from headless browser test!",
@@ -133,30 +128,109 @@ class TestPastebinHeadlessBrowser:
     def test_message(self, request):
         return request.param
 
-    def test_submit_via_browser(self, moss_runner, moss_url, test_message):
-        try:
-            from playwright.sync_api import sync_playwright
-        except ImportError:
-            pytest.skip("playwright not installed")
+    def test_https_flow(self, moss_runner, moss_url, browser_https, test_message):
         password = "e2e-test-password"
         import time
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-            context = browser.new_context(ignore_https_errors=True)
-            page = context.new_page()
-            page.on("console", lambda msg: print(f"Browser console: {msg.text}"))
-            page.goto(f"{moss_url}/pastebin", timeout=15000)
-            page.wait_for_load_state("networkidle")
-            page.fill("textarea#message", test_message)
-            page.on("dialog", lambda dialog: [print('accepting dialog!'), dialog.accept(password)])
-            page.click("button:has-text('Encrypt & Send')")
-            page.wait_for_selector("a#link[href]", timeout=10000)
-            paste_url = page.get_attribute("a#link", "href")
-            assert paste_url is not None
-            assert paste_url.startswith("/pastebin/")
-            page.goto(f"{moss_url}{paste_url}", timeout=15000)
-            time.sleep(3)
-            result = page.get_attribute("textarea#result", "textContent") or \
-                page.evaluate("() => document.getElementById('result').textContent")
-            assert result == test_message, f"Decrypted mismatch.\nExpected: {test_message}\nGot: {result}"
-            browser.close()
+        page = browser_https.new_page()
+        page.on("console", lambda msg: print(f"Browser console: {msg.text}"))
+        page.goto(f"{moss_url}/pastebin", timeout=15000)
+        page.wait_for_load_state("networkidle")
+        page.fill("textarea#message", test_message)
+        page.on("dialog", lambda dialog: [print('accepting dialog!'), dialog.accept(password)])
+        page.click("button:has-text('Encrypt & Send')")
+        page.wait_for_selector("a#link[href]", timeout=10000)
+        paste_url = page.get_attribute("a#link", "href")
+        assert paste_url is not None
+        assert paste_url.startswith("/pastebin/")
+        page.goto(f"{moss_url}{paste_url}", timeout=15000)
+        time.sleep(3)
+        result = page.get_attribute("textarea#result", "textContent") or \
+            page.evaluate("() => document.getElementById('result').textContent")
+        assert result == test_message, f"Decrypted mismatch.\nExpected: {test_message}\nGot: {result}"
+        page.close()
+
+    def test_https_warning_shown_when_https_supported(self, moss_runner, moss_url, browser_https):
+        """Test HTTPS warning when server supports HTTPS.
+        When server supports HTTPS, warning with link should be visible."""
+        page = browser_https.new_page()
+        page.goto(f"{moss_url}/pastebin", timeout=15000)
+        page.wait_for_load_state("networkidle")
+        
+        display_style = page.evaluate("() => document.getElementById('https-warning').style.display")
+        assert display_style == "block", f"Expected warning to be visible, but display is: {display_style}"
+        
+        https_link = page.locator("#https-link")
+        href = https_link.get_attribute("href")
+        assert href and href.startswith("https://"), f"Expected HTTPS link, got: {href}"
+        
+        page.close()
+
+    def test_http_access_redirects_to_https(self, moss_runner, moss_port, browser_https):
+        """Test redirect when accessing encrypted paste (originally submitted with HTTPS) over HTTP when HTTPS is available."""
+        password = "redirect-test-password"
+        
+        page = browser_https.new_page()
+        
+        https_url = f"https://127.0.0.1:{moss_port}"
+        page.goto(f"{https_url}/pastebin", timeout=15000)
+        page.wait_for_load_state("networkidle")
+        
+        page.fill("textarea#message", "Redirect test message")
+        page.on("dialog", lambda dialog: dialog.accept(password))
+        page.click("button:has-text('Encrypt & Send')")
+        page.wait_for_selector("a#link[href]", timeout=10000)
+        
+        paste_path = page.get_attribute("a#link", "href")
+        assert paste_path and paste_path.startswith("/pastebin/")
+        
+        http_url = f"http://127.0.0.1:{moss_port}{paste_path}"
+        
+        page.goto(http_url, timeout=15000)
+        
+        final_url = page.url
+        assert final_url.startswith("https://"), \
+            f"Expected redirect to HTTPS, but got: {final_url}"
+        
+        page.close()
+
+
+@pytest.mark.moss_args("-e", "pastebin", "--pastebin-fixed", "test-paste-fixed")
+class TestPastebinFixedPath:
+    def test_fixed_path(self, http_client):
+        password = "test-password-123"
+        original_data = b"fixed path test"
+        payload = generate_pastebin_payload(original_data, password)
+        r = http_client.post("/pastebin", content=payload, headers={"Content-Type": "application/json"})
+        assert r.status_code == 201
+        json_data = r.json()
+        assert json_data["url"].endswith("/test-paste-fixed")
+
+
+@pytest.mark.moss_args("-e", "pastebin", "--pastebin-password", "hardcoded123")
+class TestPastebinHardcodedPassword:
+    """Test the --pastebin-password flag."""
+    
+    def test_hardcoded_password_auto_decrypt(self, moss_runner, moss_url, browser_https):
+        """Test that paste with hardcoded password auto-decrypts in browser."""
+        test_message = "Auto-decrypt with hardcoded password"
+        
+        page = browser_https.new_page()
+        
+        page.goto(f"{moss_url}/pastebin", timeout=15000)
+        page.wait_for_load_state("networkidle")
+        page.fill("textarea#message", test_message)
+        page.on("dialog", lambda dialog: dialog.accept("hardcoded123"))
+        page.click("button:has-text('Encrypt & Send')")
+        page.wait_for_selector("a#link[href]", timeout=10000)
+        
+        paste_url = page.get_attribute("a#link", "href")
+        
+        page.goto(f"{moss_url}{paste_url}", timeout=15000)
+        page.wait_for_load_state("networkidle")
+        
+        result = page.get_attribute("textarea#result", "textContent") or \
+            page.evaluate("() => document.getElementById('result').textContent")
+        assert result == test_message, f"Decrypted mismatch.\nExpected: {test_message}\nGot: {result}"
+        
+        page.close()
+

@@ -28,11 +28,6 @@ class TestHttpResponse:
         r = http_client.get("/api/submit")
         assert r.text == TEST_BODY
 
-    @pytest.mark.asyncio
-    async def test_async_call(cls, async_http_client):
-        r = await async_http_client.get("/yabadabadoo")
-        assert r.status_code == 404
-
 
 @pytest.mark.moss_args("--status-code", 404, "--body", TEST_BODY)
 # @pytest.mark.override_moss_port(8000)

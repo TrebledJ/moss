@@ -1,9 +1,9 @@
 # conftest.py
 import pytest
-import pytest_asyncio
 import socket
 import time
 from moss import moss
+import httpx
 
 
 def get_free_port() -> int:
@@ -42,7 +42,6 @@ def moss_runner(request):
     if moss_https is not None:
         print('enabling https')
         args.extend(["--https", "--certfile", "tests/data/server.crt", "--keyfile", "tests/data/server.key"])
-
 
     print(f"Running moss version {moss.__version__}")
     builder = moss.MossBuilder(args)
@@ -92,14 +91,36 @@ def moss_url(request, moss_port):
 
 @pytest.fixture
 def http_client(moss_url):
-    """Convenient httpx client pointed at the live server"""
-    import httpx
     with httpx.Client(base_url=moss_url, timeout=5.0, verify=False) as client:
         yield client
 
 
-@pytest_asyncio.fixture
-async def async_http_client(moss_url):
-    import httpx
-    async with httpx.AsyncClient(base_url=moss_url, timeout=5.0, verify=False) as client:
-        yield client
+@pytest.fixture(scope="session")
+def _playwright():
+    """Session-scoped Playwright instance."""
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        pytest.skip("playwright not installed")
+    pw = sync_playwright().start()
+    yield pw
+    pw.stop()
+
+
+@pytest.fixture(scope="session")
+def browser_http(_playwright):
+    """Session-scoped browser for HTTP tests."""
+    browser = _playwright.chromium.launch(headless=True)
+    yield browser
+    browser.close()
+
+
+@pytest.fixture(scope="session")
+def browser_https(_playwright):
+    """Session-scoped browser for HTTPS tests.
+    Context with ignore_https_errors=True is needed for self-signed test certs."""
+    browser = _playwright.chromium.launch(headless=True)
+    context = browser.new_context(ignore_https_errors=True)
+    yield context
+    context.close()
+    browser.close()

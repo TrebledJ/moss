@@ -27,58 +27,98 @@ def _field(default, group=None, doc="", metadata={}, flags=[], choices=[], **kwa
 class PastebinMixin:
     pastebin_path: str = _field("/pastebin", group=GROUP, doc="HTTP path which accepts pastebin payloads")
     pastebin_fixed: str = _field(None, group=GROUP, doc="Write the pastebin to a fixed path")
-    pastebin_max_size: int = _field(16 * 1024**2, group=GROUP, doc="Max file size accepted for files stored on disk. Defaults to 16 MiB")
-    pastebin_local_store: str = _field("", group=GROUP, doc="Save the encryption password to browser localStorage in PLAIN TEXT. Mainly for convenience. The string passed to this argument will be used as the localStorage key.")
+    pastebin_store_password_in_browser: str = _field("", group=GROUP, doc="Save the encryption password to browser localStorage in PLAIN TEXT. The string passed to this argument will be used as the localStorage key. NOTE: This option has been provided for convenience.")
+    pastebin_password: str = _field(None, group=GROUP, doc="Hardcode a password for pastebin encryption. NOTE: This option has been provided for convenience and essentially nullifies end-to-end encryption.")
     
     def __post_init__(self):
-        self.pastebin_files = {}
+        self.pastebin_items = {}
         super().__post_init__()
 
     def list_pastebin(self):
-        return list(self.pastebin_files)
+        return list(self.pastebin_items)
     
     def get_pastebin(self, id):
-        return self.pastebin_files.get(id, None)
+        return self.pastebin_items.get(id, None)
 
 class PastebinProcessor:
     BASE64_REGEX = re.compile(r'^[A-Za-z0-9\+/=]+$')
 
     def get_services(self, server):
-        return [(server.pastebin_path, "pastebin")]
+        return [(server.pastebin_path, "pastebin"), (server.pastebin_path + "/aes.js", "pastebin-aes")]
 
     def do_GET(self, req):
         if req.path.strip("/") == req.server.pastebin_path.strip("/"):
-            content = PASTEBIN_FORM_HTML.replace(b"{{PATH}}", req.server.pastebin_path.encode("utf-8"))
-            content = content.replace(b"{{SAVE_PSWD}}", req.server.pastebin_local_store.encode("utf-8"))
+            https_link = self._get_https_link(req)
+            content = PASTEBIN_FORM_HTML.replace(b"{{HTTPS_LINK}}", https_link.encode("utf-8"))
+            content = content.replace(b"{{PATH}}", req.server.pastebin_path.encode("utf-8"))
+            content = content.replace(b"{{SAVE_PSWD}}", req.server.pastebin_store_password_in_browser.encode("utf-8"))
+            content = content.replace(b"{{HARDCODED_PSWD}}", (req.server.pastebin_password or "").encode("utf-8"))
             req.send_response_full(200, content=content)
+            return True
+        
+        elif req.path.strip("/") == (req.server.pastebin_path.strip("/") + "/aes.js"):
+            req.send_response_full(200, content=AES_JS, mime="text/javascript")
             return True
         
         elif match := re.match(rf"^{req.server.pastebin_path}/(\w+)$", req.path):
             id = match.group(1)
-            data = req.server.pastebin_files.get(id, None)
+            data = req.server.pastebin_items.get(id, None)
             if data is None:
                 req.send_response_full(404)
                 return True
-            # TODO: make this more secure by enforcing data structure???
-            content = PASTEBIN_VIEW_HTML.replace(b"{{PAYLOAD}}", data)
-            content = content.replace(b"{{SAVE_PSWD}}", req.server.pastebin_local_store.encode("utf-8"))
+            
+            payload = json.loads(data)
+            enc_type = payload.get("type", "aes-cbc")
+            
+            if (enc_type == "aes-gcm" and 
+                req.server.supports_https and 
+                not req.is_ssl):
+                https_url = self._get_https_url(req)
+                req.send_response_full(302, content=b"", headers={"Location": https_url})
+                return True
+            
+            aes_script = self._get_aes_script(req, enc_type)
+            content = PASTEBIN_VIEW_HTML.replace(b"{{PAYLOAD}}", data.encode("utf-8") if isinstance(data, str) else data)
+            content = content.replace(b"{{AES_SCRIPT}}", aes_script.encode("utf-8"))
+            content = content.replace(b"{{PATH}}", req.server.pastebin_path.encode("utf-8"))
+            content = content.replace(b"{{SAVE_PSWD}}", req.server.pastebin_store_password_in_browser.encode("utf-8"))
+            content = content.replace(b"{{HARDCODED_PSWD}}", (req.server.pastebin_password or "").encode("utf-8"))
             req.send_response_full(200, content=content)
             return True
         
-        # Path starts with pastebin path but has invalid ID format
         elif req.path.startswith(req.server.pastebin_path + "/"):
             req.send_response_full(404)
             return True
+    
+    def _get_https_link(self, req):
+        if req.server.supports_https:
+            host = req.headers.get("Host", f"localhost:{req.server.port}")
+            return f"https://{host}{req.path}"
+        return ""
+    
+    def _get_https_url(self, req):
+        host = req.headers.get("Host", f"localhost:{req.server.port}")
+        return f"https://{host}{req.path}"
+    
+    def _get_aes_script(self, req, enc_type):
+        if enc_type == "aes-cbc" and (req.is_ssl or not req.server.supports_https):
+            return f'<script src="{req.server.pastebin_path}/aes.js"></script>'
+        return ""
         
     def do_POST(self, req):
         if req.path != req.server.pastebin_path:
             return
         
-        length = len(req.body)
-        if length > req.server.pastebin_max_size:
-            self.printerr(f"Incoming data exceeded max pastebin size ({length} > {req.server.pastebin_max_size})")
-            req.send_json(413, data={
-                "message": "Error: content length too large.",
+        # Validate JSON payload
+        try:
+            payload = json.loads(req.body)
+        except json.JSONDecodeError:
+            req.send_json(400, data={"message": "Invalid JSON"})
+            return True
+        
+        if msg := self.validate_payload(req.body):
+            req.send_json(403, data={
+                "message": msg,
             })
             return True
         
@@ -86,16 +126,10 @@ class PastebinProcessor:
             path = req.server.pastebin_fixed
         else:
             path = None
-            while (path is None) or (path in req.server.pastebin_files):
+            while (path is None) or (path in req.server.pastebin_items):
                 path = random_id(6)
 
-        if msg := self.validate_payload(req.body):
-            req.send_json(403, data={
-                "message": msg,
-            })
-            return True
-        
-        req.server.pastebin_files[path] = req.body
+        req.server.pastebin_items[path] = req.body
         req.send_json(201, data={
             "message": "Success!",
             "url": f"{req.server.pastebin_path}/{path}",
@@ -105,10 +139,14 @@ class PastebinProcessor:
     def validate_payload(self, body):
         try:
             payload = json.loads(body)
-            if payload.keys() - {"iv", "salt", "data"}: raise Exception(f"excessive keys")
+            valid_keys = {"iv", "salt", "data", "type", "tag"}
+            if payload.keys() - valid_keys: raise Exception(f"excessive keys")
             if not self.BASE64_REGEX.match(payload["iv"]): raise Exception(f"iv is not base64")
             if not self.BASE64_REGEX.match(payload["salt"]): raise Exception(f"salt is not base64")
             if not self.BASE64_REGEX.match(payload["data"]): raise Exception(f"data is not base64")
+            if "type" in payload and payload["type"] not in ("aes-gcm", "aes-cbc"): raise Exception(f"invalid type")
+            if payload.get("type") == "aes-gcm" and "tag" not in payload: raise Exception(f"missing tag for aes-gcm")
+            if payload.get("type") == "aes-gcm" and not self.BASE64_REGEX.match(payload["tag"]): raise Exception(f"tag is not base64")
         except Exception as e:
             return str(e)
 
@@ -120,4 +158,7 @@ with open(Path(__file__).parent / "pastebin" / "pastebin.html", "rb") as f:
 
 with open(Path(__file__).parent / "pastebin" / "decrypt.html", "rb") as f:
     PASTEBIN_VIEW_HTML = f.read()
+
+with open(Path(__file__).parent / "pastebin" / "aes.js", "rb") as f:
+    AES_JS = f.read()
 

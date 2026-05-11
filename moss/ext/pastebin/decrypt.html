@@ -39,23 +39,12 @@
       font-weight: 500;
       min-height: 1.4em;
     }
-    /* #result {
-      margin-top: 1.5rem;
-      padding: 16px 20px;
-      border-radius: 8px;
-      white-space: pre-wrap;
-      word-break: break-word;
-      min-height: 5em;
-      font-size: 1.05rem;
-      line-height: 1.6;
-    } */
-    /* .success { background: #e6ffe6; color: #006600; } */
-    /* .error   { background: #ffe6e6; color: #990000; } */
   </style>
 </head>
 <body>
 
 <script id="encrypted-data" type="application/json">{{PAYLOAD}}</script>
+{{AES_SCRIPT}}
 
 <div class="row">
   <button onclick="decryptIt()">Re-Enter Password</button>
@@ -66,6 +55,51 @@
 <textarea id="result" disabled></textarea>
 
 <script>
+function waitForAesJs(callback, timeout = 5000) {
+    const start = Date.now();
+    const check = () => {
+        if (window.aesjs) {
+            callback(window.aesjs);
+            return;
+        }
+        if (Date.now() - start > timeout) {
+            console.error('aes.js not loaded');
+            return;
+        }
+        setTimeout(check, 50);
+    };
+    check();
+}
+
+async function sha256(message) {
+  if (typeof crypto !== 'undefined' && crypto.subtle) {
+    const encoder = new TextEncoder();
+    const data = encoder.encode(message);
+    const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+    return new Uint8Array(hashBuffer);
+  }
+  const encoder = new TextEncoder();
+  const data = encoder.encode(message);
+  const hash = new Uint8Array(32);
+  for (let i = 0; i < data.length; i++) {
+    hash[i % 32] = (hash[i % 32] + data[i]) % 256;
+  }
+  return hash;
+}
+
+async function deriveKey(password, salt) {
+  const passwordBytes = new TextEncoder().encode(password);
+  const saltBytes = salt || new Uint8Array(16);
+  
+  const combined = new Uint8Array(passwordBytes.length + saltBytes.length);
+  combined.set(passwordBytes);
+  combined.set(saltBytes, passwordBytes.length);
+  
+  const hash = await sha256(combined);
+  
+  return hash.slice(0, 16);
+}
+
 function copyToClipboard() {
   const result = document.getElementById("result");
   const text = result.textContent;
@@ -80,31 +114,11 @@ function copyToClipboard() {
   });
 }
 
-// Helpers
 function base64ToBuf(b64) {
   const bin = atob(b64.trim());
   const arr = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
-  return arr.buffer;
-}
-
-function bufToStr(buffer) {
-  return new TextDecoder().decode(buffer);
-}
-
-async function pbkdf2(password, salt) {
-  const enc = new TextEncoder();
-  const baseKey = await crypto.subtle.importKey(
-    "raw", enc.encode(password), "PBKDF2", false, ["deriveBits", "deriveKey"]
-  );
-
-  return crypto.subtle.deriveKey(
-    { name: "PBKDF2", salt, iterations: 400000, hash: "SHA-256" },
-    baseKey,
-    { name: "AES-GCM", length: 256 },
-    false,
-    ["decrypt"]
-  );
+  return arr;
 }
 
 async function decryptIt() {
@@ -133,7 +147,7 @@ async function decryptIt() {
     return;
   }
 
-  const { iv, salt, data } = payload;
+  const { type, iv, salt, data, tag } = payload;
   if (!iv || !salt || !data) {
     status.textContent = "Missing fields";
     result.className = "error";
@@ -143,12 +157,17 @@ async function decryptIt() {
 
   let password;
   let key = "{{SAVE_PSWD}}";
-  if (key) {
+  let hardcodedPswd = "{{HARDCODED_PSWD}}";
+  
+  if (hardcodedPswd) {
+    password = hardcodedPswd;
+  } else if (key) {
     password = localStorage.getItem(key) ?? null;
   }
+  
   if (!password) {
     password = prompt("Enter decryption password:", "");
-    if (key) {
+    if (key && password) {
       localStorage.setItem(key, password);
     }
   }
@@ -165,31 +184,52 @@ async function decryptIt() {
     const ivBuf   = base64ToBuf(iv);
     const ctBuf   = base64ToBuf(data);
 
-    if (ivBuf.byteLength !== 12)  throw new Error("IV must be 12 bytes");
-    if (saltBuf.byteLength !== 16) throw new Error("Salt must be 16 bytes");
-    if (ctBuf.byteLength < 16)     throw new Error("Ciphertext too short");
+    const keyBytes = await deriveKey(password, saltBuf);
 
-    const key = await pbkdf2(password, saltBuf);
+    if (type === "aes-gcm" && crypto.subtle) {
+      if (!tag) throw new Error("Missing auth tag for GCM decryption");
+      
+      const ciphertext = new Uint8Array(ctBuf.length + 16);
+      ciphertext.set(ctBuf);
+      ciphertext.set(base64ToBuf(tag), ctBuf.length);
+      
+      try {
+        const decryptedBuffer = await crypto.subtle.decrypt(
+          { name: "AES-GCM", iv: ivBuf },
+          await crypto.subtle.importKey("raw", keyBytes, "AES-GCM", false, ["decrypt"]),
+          ciphertext
+        );
+        
+        const plaintext = new TextDecoder().decode(new Uint8Array(decryptedBuffer));
+        result.textContent = plaintext;
+        result.className = "success";
+        status.textContent = "Decrypted successfully (GCM) ✓";
+      } catch (e) {
+        throw new Error("GCM decryption failed: " + (e.message || "auth tag verification failed"));
+      }
+    } else {
+      if (ivBuf.length !== 16)  throw new Error("IV must be 16 bytes for AES-CBC");
+      if (saltBuf.length !== 16) throw new Error("Salt must be 16 bytes");
+      if (ctBuf.length < 16)     throw new Error("Ciphertext too short");
+      if (ctBuf.length % 16 !== 0) throw new Error("Ciphertext must be multiple of 16 bytes");
 
-    const decrypted = await crypto.subtle.decrypt(
-      { name: "AES-GCM", iv: ivBuf, tagLength: 128 },
-      key,
-      ctBuf
-    );
+      waitForAesJs((aesjs) => {
+        const aesCbc = new aesjs.ModeOfOperation.cbc(keyBytes, ivBuf);
+        const decrypted = aesCbc.decrypt(Array.from(ctBuf));
 
-    const plaintext = bufToStr(decrypted);
+        const padValue = decrypted[decrypted.length - 1];
+        const plaintextBytes = decrypted.slice(0, decrypted.length - padValue);
 
-    result.textContent = plaintext;
-    result.className = "success";
-    status.textContent = "Decrypted successfully ✓";
-    
+        const plaintext = new TextDecoder().decode(new Uint8Array(plaintextBytes));
+
+        result.textContent = plaintext;
+        result.className = "success";
+        status.textContent = "Decrypted successfully (CBC) ✓";
+      });
+    }
   } catch (err) {
     console.error(err);
     let msg = err.message || "Decryption failed";
-
-    if (err.name === "OperationError") {
-      msg = "Wrong password!";
-    }
 
     status.textContent = "Decryption failed";
     result.className = "error";

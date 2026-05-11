@@ -37,7 +37,7 @@ import math
 # else:
 #     printe('websockets loaded!')
 
-__version__ = '0.6.4'
+__version__ = '0.6.5'
 
 __all__ = [
     'MossRequestHandler', 'HttpMossServer',
@@ -89,10 +89,14 @@ MAX_BODY_SIZE = 100 * 1024 * 1024
 
 # List of static file extensions, which influence whether a file may be gzipped if enabled
 STATIC_FILE_EXTENSIONS = {
-    'text/html', 'text/javascript', 'text/css'
+    'text/html', 'text/javascript', 'text/css',
+    'text/csv', 'text/xml', 'text/plain',
+    'application/javascript', 'application/xml',
+    'application/json',
 }
 
 MIN_GZIP_LENGTH = 4000
+MIN_MINIFY_JS_LENGTH = 8000
 
 # Rate limiting.
 MIN_BADNESS_COUNT = 8
@@ -490,11 +494,27 @@ class MossRequestHandler(BaseHTTPRequestHandler):
             content = content.encode('utf-8')
         self.send_response(code, message)
         self.send_header('Content-Type', mime)
-        self.send_header('Content-Length', len(content))
+        # minify js
+        if self.server.enable_jsmin and mime in {"text/javascript", "application/javascript"} \
+            and len(content) > MIN_MINIFY_JS_LENGTH:
+            try:
+                import rjsmin
+                old_len = len(content)
+                content = rjsmin.jsmin(content.decode('utf-8')).encode('utf-8')
+                logger.info(f"minified JS: {old_len} --> {len(content)}")
+            except ImportError:
+                printe(f"{CLR_RED}JS minification enabled but could not import jsminification module.{CLR_RST}")
+        
+        # gzip
         if self.server.enable_gzip and "gzip" in self.headers.get("accept-encoding", "") \
             and len(content) > MIN_GZIP_LENGTH and mime in STATIC_FILE_EXTENSIONS:
+            old_len = len(content)
             content = memoised_gzippy(content)
+            logger.info(f"gzipped {self.path[:30]}: {old_len} --> {len(content)}")
             self.send_header('Content-Encoding', 'gzip')
+        
+        self.send_header('Content-Length', len(content))
+
         for k, v in headers.items():
             self.send_header(k, v)
         self.end_headers()
@@ -918,6 +938,7 @@ class HttpMossServer:
     
     server_header: str = _field("moss (https://github.com/TrebledJ/moss)", group="response", flags=["--server"], doc="Server header in response. Special values: random, none")
     headers: list[str] = _field(list, group="response", flags=["--header", "-H"], doc="Headers to include in server output. You can specify multiple of these, e.g. -H 'Set-Cookie: a=b' -H 'Content-Type: application/json'")
+    enable_jsmin: bool = _field(False, group="response", flags=["--minify-js"], doc="Enable minification on large JavaScript responses")
     enable_gzip: bool = _field(False, group="response", flags=["--gzip"], doc="Enable gzip on static file extensions for lower network latency")
 
     supports_ws: bool = _field(False, group="protocols", flags=["--websockets"], doc="Enable websocket support. Limited support, currently only detects the HTTP handshake")
@@ -936,6 +957,16 @@ class HttpMossServer:
         self._validate()
         self.processors = []
         params = self.__dict__.items()
+
+        if self.enable_jsmin:
+            try:
+                import rjsmin
+            except ImportError:
+                printe(f"{CLR_RED}JS minification enabled but rjsmin is not installed.")
+                printe("")
+                printe("\tpip install rjsmin")
+                printe(f"{CLR_RST}")
+                sys.exit(1)
 
         self.server = server = ThreadingHTTPServer((self.host, self.port), self.RequestHandlerClass)
         server.queue = self.queue = queue.Queue(maxsize=QUEUE_MAX_SIZE)
