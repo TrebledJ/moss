@@ -11,43 +11,46 @@ Cut time during engagements, exams, and bug bounty!
     - Blind Attacks (XSS/SQLi/RCE)
 - Automation and Exploit Development via a Programmatic Interface and Structured Output
 - HTTP Honeypots (maybe), with socket-level reporting
-- Additional features provided through extensions:
+- Additional use cases covered by extensions:
     - DLP/Exfiltration
-    - Pastebin
+    - Secure (End-to-End Encrypted) Pastebin
+    - Browser-Based C2 Agent
 
 The general intended use is to host this on a VPS or— in case you're testing an internal network— your own machine.
 
 ## Features
 
 - [x] custom response
-    - [x] status, headers, body
-    - [x] gzip static files to save bandwidth and load stuff faster
+    - [x] customise status, headers, body
+    - [x] gzip static files to save bandwidth and load stuff faster (`--gzip`)
 - [x] OAST features
-    - [x] match/filter requests by string
-    - [x] extract correlation ID by regex
+    - [x] match/filter interesting requests by regex (`--filter`)
+    - [x] extract correlation ID by regex (`--correlation`)
 - [x] comprehensive JSONL logging
 - [x] cool network shenanigans:
-    - [x] polyglot HTTP (supports both HTTP/HTTPS on the same port)
+    - [x] polyglot HTTP (supports both HTTP/HTTPS on the same port) (`--https`)
     - [x] log HTTP anomalies (unsupported method, bad version, potential port scan, and more)
-    - [x] detects HTTP protocol variants (websockets, websockets over SSL, HTTP proxy, HTTP proxy over SSL, HTTPS tunnel proxy) (NOTE: currently only detects, but doesn't parse or follow through on handshakes etc. That is planned for the future.)
+    - [x] detects HTTP protocol variants (HTTP proxy, HTTP proxy over SSL, HTTPS tunnel proxy) (NOTE: currently only detects, but doesn't parse or follow through)
+- [x] websocket OAST support (`-e websocket`)
 - [x] modular extensions, include what you need
-    - [x] send notifications to **Discord** webhook on match
-    - [x] protect endpoints with **auth** middleware (basic, bearer)
-    - [x] in-memory **pastebin** (with end-to-end encryption)
-    - [x] robust **stealthy** exfiltration module customisable via a JSON DSL
-    - [x] serve local files
-    - [x] upload files
-- [x] store settings in a **config file** to keep your command line clean
+    - [x] send notifications to **Discord** webhook on match (`-e notify`)
+    - [x] protect endpoints with **auth** middleware (basic, bearer) (`-e auth`)
+    - [x] in-memory **pastebin** (with end-to-end encryption) (`-e pastebin`)
+    - [x] robust **stealthy** exfiltration module customisable via a JSON DSL (`-e stealthnet`)
+    - [x] serve local files (`-e file`)
+    - [x] upload files (`-e upload`)
+    - [x] remote JS debugging, or in other words, a browser-based C2 agent (`-e debugger`)
+- [x] store settings in a **config file** to keep your command line clean (`@config.txt`)
 - [x] **blocks** nosy scanners to reduce noise
-- [x] DoS protection 
+- [x] DoS protection (hopefully)
 
 Additional Perks:
 
 - [x] zero dependencies! (pure Python)[^deps]
-- [x] single Python file (for OAST), easy to setup, easy to configure, easy to hack(?)
+- [x] core OAST comes in a single Python file; easy to setup, easy to configure, easy to hack(?)
 - [x] pretty ANSI colours!
 
-[^deps]: Zero dependencies... with the exception of   an optional `jsonschema` package used in stealthnet for validating profiles, mainly for the case where you're developing custom profiles.
+[^deps]: Zero dependencies... with the exception of some optional packages to enhance your experience. (Check pyproject.toml or noodle around to find out more.)
 
 ## Quick Start
 
@@ -81,7 +84,7 @@ You may be interested in these other options:
 **Basic**: Custom port
 
 ```shell
-moss -p 443 
+moss -p 80
 ```
 
 **OpSec**: Override the default server header
@@ -388,7 +391,7 @@ Using the `pastebin` extension with `auth` provides two layers of password prote
     
     By using a password which is not sent across the network, we ensure that eavesdroppers don't have access to the data. Of course, this only holds if the pastebin password is different from the auth password.
 
-    This is important even when HTTPS is enabled. If you're in a red team engagement exfiltrating from a victim corporate machine, that machine will likely have a corporate certificate installed so that it can proxy all web traffic through servers for DLP and safety inspection. Let me rephrase... Even in HTTPS, traffic can still be decrypted by interested parties who hold the certificates. There is also the possibility of a [compromised/malicious CA](https://sslmate.com/resources/certificate_authority_failures) intercepting data.
+    This is important even when HTTPS is enabled. If you're in a red team engagement exfiltrating from a victim machine, there is the possibility deep packet inspection will pick up the goodies. Let me rephrase... Even in HTTPS, traffic can still be decrypted by those who hold the right keys/certificates. There is also the possibility of a [compromised/malicious CA](https://sslmate.com/resources/certificate_authority_failures) intercepting data.
 
 ## Stealthy Upload (StealthNet)
 
@@ -661,7 +664,7 @@ I still use interactsh; it's a great tool boasting many integrations. But tools 
 - [ ] automation(correlation): register filters/matchers dynamically, and await for match
 - [ ] automation: async programmatic API
 - [ ] protocol: support ACAO in responses
-- [ ] protocol: receive and log incoming websocket messages
+- [x] protocol: receive and log incoming websocket messages
 - [ ] protocol: support HTTP/2 requests
 - [ ] protocol: support and comply with HTTP proxy
 - [ ] protocol: support and comply with HTTPS Tunnel proxy
@@ -669,6 +672,7 @@ I still use interactsh; it's a great tool boasting many integrations. But tools 
 - [ ] ui: toggle detailed/compressed views with keyboard input
 - [ ] ui: anchored status bar, displaying stats, e.g. number of filtered requests, number of anomalies
 - [ ] misc: better structured reporting of anomalies and socket-level analysis?
+- [ ] misc: encryption, throttling for debugger c2
 - [ ] stealthnet: more TODOs in [ext/stealthnet/README.md](ext/stealthnet/README.md#roadmap)!
 
 PRs welcome.

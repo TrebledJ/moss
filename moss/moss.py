@@ -25,19 +25,7 @@ from copy import deepcopy
 import gzip
 import math
 
-# Extensions
-# try:
-#     import websockets
-#     from websockets.server import ServerProtocol
-#     from websockets.sync.server import ServerConnection
-#     from websockets.frames import Frame
-#     from websockets.http11 import Request, Response
-# except ImportError:
-#     printe('websockets not loaded')
-# else:
-#     printe('websockets loaded!')
-
-__version__ = '0.6.5'
+__version__ = '0.7.0'
 
 __all__ = [
     'MossRequestHandler', 'HttpMossServer',
@@ -70,7 +58,6 @@ WEBDAV_COMMANDS = [
 ]
 
 # The number of seconds to wait on the initial socket before timing out.
-# TODO: test nc client, send 1 byte, then hang
 SOCKET_TIMEOUT = 30
 
 TIMEOUT_FOR_FIRST_BYTE = 8 # Timeout for the first byte

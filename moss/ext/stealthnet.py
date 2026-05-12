@@ -1,18 +1,22 @@
 """
 ext/stealthnet.py
 
----
+Stealthy exfiltration module for MOSS. Chunkifies data and smuggles it out
+via HTTP requests using a JSON DSL profile. The profile is shared between
+the JS frontend (exfiltration client) and the Python backend (reassembly).
 
-A sneaky exfiltration module to chunkify and siphon away bytes to MOSS. Define a
-profile with a JSON DSL to customise your requests and byte-smuggling action.
-The JSON will be understood by both the JS frontend (when sending requests) and
-the Python backend (when parsing requests).
+Slower than a direct upload by design — trades speed for stealth.
 
-Due to the nature of this module, exfiltration is much slower compared to a
-simple upload.
+Sample profiles in ext/stealthnet/profiles/.
 
-Sample profiles have been provided in the ext/stealthnet/profiles/ folder
-(extensions for an extension!).
+Usage:
+    moss -e stealthnet --stealth-profile profile.json
+    moss -e stealthnet --stealth-profile custom.json --stealth-no-validate
+
+CLI flags:
+    --stealth-profile PATH      Path to the JSON profile (default: profile.json)
+    --stealth-no-validate       Skip JSON schema validation
+    --stealth-upload-to DIR     Directory to store reassembled files (default: dest)
 """
 
 from dataclasses import dataclass, field

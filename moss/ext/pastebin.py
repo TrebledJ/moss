@@ -1,9 +1,26 @@
 """
 ext/pastebin.py
 
----
+E2E-encrypted in-memory pastebin for MOSS.
 
-Simple in-memory pastebin.
+Pastes are encrypted in the browser using AES (via a bundled JS library)
+before being sent to the server. The server never sees plaintext content
+unless --pastebin-password is used (which bypasses E2EE).
+
+Supports fixed IDs, optional localStorage password persistence, and
+headless browser decryption.
+
+Usage:
+    moss -e pastebin
+    moss -e pastebin --pastebin-password mysecret
+    moss -e pastebin --pastebin-fixed mypaste --pastebin-store-password-in-browser key
+
+CLI flags:
+    --pastebin-path PATH            HTTP path for the pastebin (default: /pastebin)
+    --pastebin-fixed ID             Write pastes to a fixed ID instead of random
+    --pastebin-store-password-in-browser KEY
+                                    Save encryption password to browser localStorage
+    --pastebin-password PASS        Hardcode a password (disables E2EE)
 """
 
 from dataclasses import dataclass, field

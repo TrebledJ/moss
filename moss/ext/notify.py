@@ -1,13 +1,19 @@
 """
-ext/discord.py
+ext/notify.py
 
----
+Notification handler for MOSS. Sends request events to a Discord webhook
+(or other platforms as support is added). Request details are escaped and
+rendered in a Markdown codeblock.
 
-This extension showcases a handler which calls a Discord webhook. From there,
-you can fine-tune your notification settings, control what guild/channel
-messages appear in, etc.
+Usage:
+    moss -e notify --notify discord --webhook-url https://discord.com/api/webhooks/...
+    moss -e notify --notify discord --id my-server --notify-on match --notify-on anomaly
 
-Details and request data are escaped and rendered in a Markdown codeblock.
+CLI flags:
+    --notify PLATFORM       Notification platform (choices: discord)
+    --notify-on EVENT       Trigger on: match, correlation, anomaly, all (default: all, repeatable)
+    --webhook-url URL       Webhook URL
+    --id ID                 Instance identifier (auto-generated if omitted)
 """
 
 from dataclasses import dataclass, field

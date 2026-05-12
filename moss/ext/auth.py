@@ -1,17 +1,20 @@
 """
 ext/auth.py
 
----
+Authentication middleware for MOSS. Protects all downstream processors
+with HTTP Basic or Bearer token authentication.
 
-Safeguard your subsequent processors with some simple authentication.
-In the current implementation, auth will be applied to ALL URLs.
+NOTE: Order matters. Specify `-e auth ...` before the extensions you want
+to protect. For example, `-e auth upload` protects the upload endpoint;
+`-e upload auth` does NOT.
 
-NOTE: You SHOULD specify this extension before other extensions which handle
-HTTP response, otherwise they won't be protected by auth!
+Usage:
+    moss -e auth --basic-auth admin:secret
+    moss -e auth --token-auth s3cr3t
 
-For instance, `-e auth.py upload.py` will protect your upload endpoint with auth.
-But `-e upload.py auth.py` will evaluate your upload endpoint first, and auth second.
-You can also take advantage of this "ordering" feature to handle preauth responses.
+CLI flags:
+    --basic-auth USER:PASS  Basic authentication credentials
+    --token-auth TOKEN      Bearer token (use "generate" for a random token)
 """
 
 from dataclasses import dataclass, field

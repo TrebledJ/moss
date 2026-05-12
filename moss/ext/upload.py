@@ -1,14 +1,20 @@
 """
 ext/upload.py
 
----
-
-A simple file upload extension inspired by the well-known uploadserver package
+Simple file upload server for MOSS. Inspired by the uploadserver package
 (https://github.com/Densaugeo/uploadserver/).
 
-For simplicity, this implementation uses the entire POST body (no form data) to
-upload files. As such, only one file can be uploaded at a time.
+Uses the raw POST body (no multipart form data) — one file per request.
+Files can be stored in memory or on disk.
 
+Usage:
+    moss -e upload
+    moss -e upload --upload-path /receive --upload-to ./incoming
+
+CLI flags:
+    --upload-path PATH      HTTP path for uploads (default: /upload)
+    --upload-to DIR         Directory to store files (default: in-memory)
+    --upload-max-size BYTES Max file size; defaults to 1 MiB (memory) or MOSS max body (disk)
 """
 
 from dataclasses import dataclass, field

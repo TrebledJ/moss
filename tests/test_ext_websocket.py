@@ -11,7 +11,7 @@ import json
 from pathlib import Path
 from contextlib import contextmanager
 
-WS_MAGIC = b"258EAFA5-E914-47DA-95CA-5AB5DC11D735"
+WS_MAGIC = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
 WS_CONTINUATION = 0x0
 WS_TEXT = 0x1

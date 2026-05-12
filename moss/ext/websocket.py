@@ -7,16 +7,18 @@ Handles WebSocket upgrade requests and logs incoming frames as structured
 events through the standard event pipeline — same as HTTP requests —
 so they appear in logs, JSONL, and notifications.
 
-Usage:
-    moss -e websocket
-
 WebSocket support is enabled automatically when this extension is loaded.
 The upgrade (101 Switching Protocols) is logged as a regular HTTP
 request through EnqueueProcessor. Subsequent WS frames are logged
 as WS-TEXT / WS-BINARY events with proto=WS (or WSS for TLS).
 
-CLI flags (via WebSocketMixin):
-    --ws-path PATH           Restrict WS handling to a specific path (optional)
+Usage:
+    moss -e websocket
+    moss -e websocket --ws-path /myws --websocket-tester /wstest
+
+CLI flags:
+    --ws-path PATH           Restrict WS handling to a specific path (default: any path)
+    --websocket-tester PATH  Serve the WebSocket tester HTML page at this path (default: disabled)
 """
 
 import hashlib

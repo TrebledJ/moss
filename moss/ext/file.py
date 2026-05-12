@@ -1,18 +1,19 @@
 """
 ext/file.py
 
----
+On-demand file server for MOSS. Resembles Python's http.server — files
+are served from the filesystem at request time (not preloaded).
 
-This is an extension which resembles Python's default http.server.
+Differs from ext/sfile.py: files are read on each request (no RAM preload)
+and no `serve_file()` API is exposed. Not intended for use alongside sfile.py.
 
-Index page (directory listing) can be enabled with `--index`.
+Usage:
+    moss -e file -d /path/to/serve --file-base-path /static --file-index
 
-This is different from ext/sfile.py in that files are queried from the filesystem
-during the HTTP request rather than during init. This extension also does
-not provide a `serve_file()` API, which would allow scripting/automation
-to customise server responses.
-
-This extension is not intended to be used in conjunction with ext/sfile.py.
+CLI flags:
+    --file-base-path PATH   HTTP base path for file access (default: /files)
+    --file-directory, -d    Local directory to serve files from
+    --file-index            Enable index/directory listing page
 """
 
 from dataclasses import dataclass, field

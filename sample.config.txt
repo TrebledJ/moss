@@ -27,9 +27,12 @@
 --server random
 -H 'X-Frame-Options: SAMEORIGIN'
 
+# Display a home page which lists the available services.
+--index
+
 # [files]
-#--directory ''
-#--base-path /static
+#--file-directory ''
+#--file-base-path /static
 
 # [logging]
 #--filter /mysecretendpoint

@@ -1,17 +1,19 @@
 """
 ext/sfile.py
 
----
+Preloaded file server for MOSS. Files are scanned and loaded into memory
+at startup for safety guarantees (no filesystem access during requests).
 
-This is a simple extension which demonstrates sending files from the local
-file system. Files are scanned and preloaded into memory for safety guarantees
-at the expense of memory.
+Exposes `server.serve_file(name, content, mime)` for programmatic use.
+Not intended for use alongside ext/file.py.
 
-When loaded, HttpMossServer is extended with a .serve_file() method, which
-accepts a file name (the HTTP sub-path to access the file), the content (in
-bytes), and the mime type.
+Usage:
+    moss -e sfile -d /path/to/serve --file-base-path /static --file-index
 
-This extension is not intended to be used in conjunction with ext/file.py.
+CLI flags:
+    --file-base-path PATH   HTTP base path for file access (default: /files)
+    --file-directory, -d    Local directory to preload and serve files from
+    --file-index            Enable index/directory listing page
 """
 
 from dataclasses import dataclass, field
