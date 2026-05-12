@@ -182,6 +182,15 @@ class TimeoutBufferedReader:
     def is_buffer_empty(self):
         return len(self._pastreadbuffer) == 0 and len(self._buffer) == 0
 
+    def drain(self):
+        """Return all currently buffered bytes without blocking.
+        Used after protocol upgrade (e.g. WebSocket) to recover any
+        bytes that were pre-read from the socket but not consumed by HTTP parsing.
+        """
+        result = bytes(self._buffer)
+        self._buffer.clear()
+        return result
+
     def _wait_for_data(self, remaining_timeout):
         """Block via select until data or timeout"""
         # if remaining_timeout <= 0:
@@ -828,9 +837,9 @@ class MossRequestHandler(BaseHTTPRequestHandler):
         except InitSuccessError:
             # This is just a simple control flow to handle bad init states.
             pass
-        except (ConnectionResetError, BrokenPipeError) as e:
+        except (ConnectionError, BrokenPipeError) as e:
             # Log the reset but don't crash
-            self.handle_anomaly(f"TCP socket was opened, but connection reset ({e})")
+            self.handle_anomaly(f"TCP socket was opened, but connection error ({e})")
         except ssl.SSLError as e:
             self.handle_anomaly(f"ssl error during handle ({e})")
         except TimeoutError as e:
@@ -918,6 +927,7 @@ def inject_class_utils(clss):
         cls.printe = lambda cls, msg: printe(f"{msg}")
         cls.printerr = lambda cls, msg: printe(f"{CLR_RED}{msg}{CLR_RST}")
         cls.printstatus = lambda cls, msg: printe(f"{CLR_CYN}{msg}{CLR_RST}")
+        cls.warning = lambda cls, msg: printe(f"{CLR_YLW}{msg}{CLR_RST}")
         cls.c = c
 
 # def wrap_processor_mixin(clss):
@@ -1068,11 +1078,6 @@ class ProtocolProcessor:
             # TODO: proxy connection
             req.proto = "PROXY/" + req.proto
 
-        if req.server.supports_ws:
-            # TODO: handle upgrade and listen for ws
-            if req.headers.get('upgrade', '').lower() == 'websocket':
-                req.proto = "WSS" if req.is_ssl else "WS"
-
     def do_CONNECT(self, req):
         req.proto = "TUNNEL/" + req.proto
 
@@ -1150,9 +1155,11 @@ class LoggingEventHandler:
     ignore_common_headers: bool = _field(False, group="logging", flags=["--ignore-common-headers", "-i"], doc="Exclude common request headers from display. This does not affect jsonl output")
     jsonl_file: str = _field(None, group="logging", flags=["--jsonl", "-o"], doc="Output file path for JSONL logging (one JSON event per line). Use `--jsonl -` to output to stdout")
     no_anomaly: bool = _field(False, group="logging", doc="Do not log anomalies")
+    no_log: bool = _field(False, group="logging", doc="Do not log anything entirely")
     simple: bool = _field(False, group="logging", doc="Use simple logging, one line per event")
 
     def __post_init__(self):
+        if self.no_log: return
         if self.jsonl_file: printe(f"{CLR_CYN}JSONL logging to:{CLR_RST} {self.jsonl_file}")
 
     def handle_event(self, data):
@@ -1161,7 +1168,10 @@ class LoggingEventHandler:
         but here I chose to base it structurally on field names, for convenience.
         i.e. find the first handler which accepts the data fields in its named parameters
         """
-        event_handlers = [self.handle_request, self.handle_anomaly, self.handle_response]
+        if self.no_log:
+            return
+
+        event_handlers = [self.handle_websocket, self.handle_request, self.handle_anomaly, self.handle_response]
         for func in event_handlers:
             try:
                 func(**data)
@@ -1176,6 +1186,16 @@ class LoggingEventHandler:
         else:
             # Default handler
             logger.debug(f'{__class__.__name__} discarding event:', data)
+
+    def handle_websocket(self, *, proto, method, requestline, path, headers, body, ws_event, **kwargs):
+        matches = kwargs.get("filter_matches", False)
+        if not matches and not self.output_all:
+            return
+        self.log_to_jsonl(
+            proto=proto, method=method, requestline=requestline, path=path, headers=headers, body=body,
+            ws_event=ws_event, **kwargs,
+        )
+        self.log_websocket_to_display(proto, requestline, body, **kwargs)
 
     def handle_request(self, *, proto, method, requestline, path, headers, body, **kwargs):
         matches = kwargs.get("filter_matches", False)
@@ -1253,6 +1273,32 @@ class LoggingEventHandler:
             printe(f"{CLR_RED}{escape_non_printable(shorten(requestline))}{CLR_RST}")
             printe(f"{CLR_RED}{bot_status:-<30}-{event_timestamp}{CLR_RST}\n")
 
+    def log_websocket_to_display(
+        self, proto, requestline, body,
+        *, request_timestamp, event_timestamp, client,
+        filter_matches, correlation_id,
+        **_kwargs,
+    ):
+        if not filter_matches and not self.output_all:
+            return
+        tag = "WSFRAME" if filter_matches else "WSREJ"
+        if self.simple:
+            brief = f"{CLR_CYN}WSFRM{CLR_RST}" if filter_matches else f"{CLR_RED}WSREJ{CLR_RST}"
+            e = escape_non_printable
+            reqline = e(requestline[:50])
+            bod = e(body[:30].decode('utf-8', errors='backslashreplace')) if body else ""
+            printe(f"[{event_timestamp.split(' ')[-1]}] {brief} [{client}] {CLR_GRN}{proto}{CLR_RST} {CLR_YLW}{reqline}{CLR_RST} {CLR_BLU}{bod}{CLR_RST}")
+            return
+
+        printe(f"{CLR_CYN}{tag:-<12}{client:->16}---{request_timestamp}{CLR_RST}")
+        printe(f"{CLR_GRN}{escape_non_printable(shorten(requestline))}{CLR_RST}")
+        if body:
+            printe(f"{escape_non_printable(shorten(body))}")
+        if correlation_id:
+            printe(f"{CLR_CYN}{tag:-<12}{escape_non_printable(correlation_id):->15}---{event_timestamp}{CLR_RST}\n")
+        else:
+            printe(f"{CLR_CYN}{tag:-<12}{event_timestamp:->18}{CLR_RST}\n")
+
     def log_anomaly_to_display(self, anomaly, *, tags, details, connect_timestamp, event_timestamp, client, status='ANOMALY', **kwargs):
         if self.simple:
             printe(f"[{event_timestamp.split(' ')[-1]}] {CLR_YLW}ANMLY{CLR_RST} [{client}] {CLR_RED}{anomaly}{CLR_RST}")
@@ -1321,11 +1367,7 @@ class DefaultProcessor:
             return True
 
         req.mark_ip_bad()
-        if req.server.supports_ws and (req.proto.endswith("WS") or req.proto.endswith("WSS")):
-            # TODO: handle upgrade and listen for ws
-            self.send_invalid_method_and_close(req)
-        else:
-            self.send_default_response(req)
+        self.send_default_response(req)
         return True
 
     def do_HEAD(self, req):

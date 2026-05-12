@@ -10,7 +10,7 @@ license = { text = "MIT License" }
 readme = "README.md"
 
 [project.optional-dependencies]
-all = ["jsonschema", "rjsmin"]
+all = ["jsonschema", "rjsmin", "prompt_toolkit"]
 test = [
     "pytest>=9.0.0",
     "pytest-asyncio>=1.3.0",

@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MOSS WebSocket Tester</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: system-ui, sans-serif; background: #111; color: #ddd; height: 100vh; display: flex; flex-direction: column; padding: 16px; gap: 12px; }
+  h1 { font-size: 18px; color: #0af; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .row label { font-size: 13px; color: #999; }
+  input, select, button { background: #222; color: #ddd; border: 1px solid #444; border-radius: 4px; padding: 6px 10px; font-size: 13px; }
+  input:focus, select:focus { border-color: #0af; outline: none; }
+  input[type="text"] { width: 120px; }
+  input[type="number"] { width: 80px; }
+  #path { flex: 1; min-width: 100px; }
+  button { cursor: pointer; font-weight: 600; }
+  button:hover { filter: brightness(1.3); }
+  #connect { background: #090; border-color: #0c0; }
+  #connect.connected { background: #900; border-color: #c00; }
+  #send { background: #05a; border-color: #07c; }
+  #send:disabled { opacity: .4; cursor: not-allowed; }
+  #status { font-size: 13px; }
+  .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; }
+  .dot.disconnected { background: #666; }
+  .dot.connecting { background: #fa0; }
+  .dot.connected { background: #0c0; }
+  #messages { flex: 1; background: #1a1a1a; border: 1px solid #333; border-radius: 4px; padding: 8px; font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace; font-size: 13px; overflow-y: auto; min-height: 200px; }
+  #messages .sent { color: #6af; }
+  #messages .recv { color: #6f6; }
+  #messages .sys { color: #fa0; font-style: italic; }
+  #messages .err { color: #f44; }
+  #messages .ts { color: #666; margin-right: 8px; font-size: 11px; }
+  #msg_body { flex: 1; min-width: 200px; }
+  .side { display: flex; flex-direction: column; gap: 8px; }
+  @media (min-width: 700px) {
+    .side { flex-direction: row; }
+  }
+</style>
+</head>
+<body>
+<h1>WebSocket Tester</h1>
+
+<div class="row" id="connRow">
+  <span class="dot disconnected" id="dot"></span>
+  <span id="status">Disconnected</span>
+</div>
+
+<div class="row">
+  <label for="host">Host</label>
+  <input type="text" id="host" value="127.0.0.1" placeholder="host">
+  <label for="port">Port</label>
+  <input type="number" id="port" value="8000" min="1" max="65535" style="width:80px">
+  <label for="path">Path</label>
+  <input type="text" id="path" value="/" placeholder="/path">
+  <label for="proto">Protocol</label>
+  <select id="proto"><option value="ws://">ws://</option><option value="wss://">wss://</option></select>
+  <button id="connect">Connect</button>
+</div>
+
+<div class="side">
+  <div class="row" style="flex:1">
+    <label for="msg_type">Type</label>
+    <select id="msg_type">
+      <option value="text">Text</option>
+      <option value="binary">Binary</option>
+    </select>
+    <input type="text" id="msg_body" placeholder="Message content">
+    <button id="send" disabled>Send</button>
+  </div>
+</div>
+
+<div id="messages"></div>
+
+<script>
+(function() {
+  const hostEl    = document.getElementById('host');
+  const portEl    = document.getElementById('port');
+  const pathEl    = document.getElementById('path');
+  const protoEl   = document.getElementById('proto');
+  const connectBtn = document.getElementById('connect');
+  const sendBtn   = document.getElementById('send');
+  const msgType   = document.getElementById('msg_type');
+  const msgBody   = document.getElementById('msg_body');
+  const messages  = document.getElementById('messages');
+  const dot       = document.getElementById('dot');
+  const statusEl  = document.getElementById('status');
+
+  let ws = null;
+  let msgId = 0;
+
+  function setStatus(state, text) {
+    dot.className = 'dot ' + state;
+    statusEl.textContent = text;
+  }
+
+  function log(cls, text) {
+    const div = document.createElement('div');
+    const ts = new Date().toLocaleTimeString();
+    div.innerHTML = `<span class="ts">[${ts}]</span><span class="${cls}">${escapeHtml(text)}</span>`;
+    messages.appendChild(div);
+    messages.scrollTop = messages.scrollHeight;
+  }
+
+  function escapeHtml(s) {
+    const d = document.createElement('div');
+    d.textContent = String(s);
+    return d.innerHTML;
+  }
+
+  function buildUrl() {
+    const proto = protoEl.value;
+    let host = hostEl.value.trim();
+    if (host.startsWith('ws://') || host.startsWith('wss://')) {
+      try { const u = new URL(host); host = u.host; } catch(_) {}
+    }
+    let port = portEl.value.trim();
+    let path = pathEl.value.trim();
+    if (!path.startsWith('/')) path = '/' + path;
+    return `${proto}${host}:${port}${path}`;
+  }
+
+  function doConnect() {
+    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+      ws.close();
+      return;
+    }
+    const url = buildUrl();
+    setStatus('connecting', 'Connecting...');
+    connectBtn.textContent = 'Connecting...';
+    connectBtn.disabled = true;
+
+    log('sys', `Connecting to ${url} ...`);
+
+    try {
+      ws = new WebSocket(url);
+    } catch (e) {
+      setStatus('disconnected', 'Disconnected');
+      connectBtn.textContent = 'Connect';
+      connectBtn.disabled = false;
+      log('err', `Connection error: ${e.message}`);
+      return;
+    }
+
+    ws.onopen = function() {
+      setStatus('connected', `Connected to ${url}`);
+      connectBtn.textContent = 'Disconnect';
+      connectBtn.disabled = false;
+      sendBtn.disabled = false;
+      log('sys', 'Connection established');
+    };
+
+    ws.onclose = function(e) {
+      setStatus('disconnected', 'Disconnected');
+      connectBtn.textContent = 'Connect';
+      connectBtn.disabled = false;
+      sendBtn.disabled = true;
+      log('sys', `Connection closed (code=${e.code} reason=${e.reason || 'none'})`);
+      ws = null;
+    };
+
+    ws.onerror = function(e) {
+      log('err', 'WebSocket error (see browser console)');
+      console.error('WS error:', e);
+    };
+
+    ws.onmessage = function(e) {
+      if (e.data instanceof Blob) {
+        const reader = new FileReader();
+        reader.onload = function() {
+          let label = `Binary (${e.data.size} bytes)`;
+          log('recv', `${label}: ${escapeHex(reader.result)}`);
+        };
+        reader.readAsArrayBuffer(e.data);
+      } else if (e.data instanceof ArrayBuffer) {
+        log('recv', `Binary (${e.data.byteLength} bytes): ${escapeHex(e.data)}`);
+      } else {
+        log('recv', e.data);
+      }
+    };
+  }
+
+  function escapeHex(buf) {
+    const bytes = new Uint8Array(buf);
+    let out = '';
+    for (let i = 0; i < Math.min(bytes.length, 64); i++) {
+      out += bytes[i].toString(16).padStart(2, '0') + ' ';
+    }
+    if (bytes.length > 64) out += '...';
+    return out.trim();
+  }
+
+  function doSend() {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    const type = msgType.value;
+    let body = msgBody.value;
+    const id = ++msgId;
+
+    switch (type) {
+      case 'text':
+        ws.send(body);
+        log('sent', `[#${id}] Text: ${body}`);
+        break;
+
+      case 'binary': {
+        const bytes = textToBytes(body);
+        ws.send(bytes);
+        log('sent', `[#${id}] Binary (${bytes.length} bytes): ${escapeHex(bytes)}`);
+        break;
+      }
+    }
+
+    msgBody.value = '';
+    msgBody.focus();
+  }
+
+  function textToBytes(s) {
+    const encoder = new TextEncoder();
+    return encoder.encode(s);
+  }
+
+  connectBtn.addEventListener('click', doConnect);
+  sendBtn.addEventListener('click', doSend);
+
+  msgBody.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      doSend();
+    }
+  });
+
+  setStatus('disconnected', 'Disconnected');
+})();
+</script>
+</body>
+</html>
