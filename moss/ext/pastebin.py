@@ -61,11 +61,11 @@ class PastebinProcessor:
     BASE64_REGEX = re.compile(r'^[A-Za-z0-9\+/=]+$')
 
     def get_services(self, server):
-        return [(server.pastebin_path, "pastebin"), (server.pastebin_path + "/aes.js", "pastebin-aes")]
+        return [(server.pastebin_path, "pastebin")]
 
     def do_GET(self, req):
         if req.path.strip("/") == req.server.pastebin_path.strip("/"):
-            https_link = self._get_https_link(req)
+            https_link = self._get_https_url(req) if req.server.supports_https and not req.is_ssl else ""
             content = PASTEBIN_FORM_HTML.replace(b"{{HTTPS_LINK}}", https_link.encode("utf-8"))
             content = content.replace(b"{{PATH}}", req.server.pastebin_path.encode("utf-8"))
             content = content.replace(b"{{SAVE_PSWD}}", req.server.pastebin_store_password_in_browser.encode("utf-8"))
@@ -87,9 +87,7 @@ class PastebinProcessor:
             payload = json.loads(data)
             enc_type = payload.get("type", "aes-cbc")
             
-            if (enc_type == "aes-gcm" and 
-                req.server.supports_https and 
-                not req.is_ssl):
+            if (enc_type == "aes-gcm" and req.server.supports_https and not req.is_ssl):
                 https_url = self._get_https_url(req)
                 req.send_response_full(302, content=b"", headers={"Location": https_url})
                 return True
@@ -106,12 +104,6 @@ class PastebinProcessor:
         elif req.path.startswith(req.server.pastebin_path + "/"):
             req.send_response_full(404)
             return True
-    
-    def _get_https_link(self, req):
-        if req.server.supports_https:
-            host = req.headers.get("Host", f"localhost:{req.server.port}")
-            return f"https://{host}{req.path}"
-        return ""
     
     def _get_https_url(self, req):
         host = req.headers.get("Host", f"localhost:{req.server.port}")

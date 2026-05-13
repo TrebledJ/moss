@@ -41,6 +41,20 @@
     }
     .success { background: #e6ffe6; color: #006600; }
     .error   { background: #ffe6e6; color: #990000; }
+    #https-warning {
+      background: #fff3cd;
+      padding: 12px;
+      border-radius: 6px;
+      margin-top: 1rem;
+      display: none;
+    }
+    @media (prefers-color-scheme: dark) {
+      #https-warning {
+        background: #3a3520;
+        color: #e0d5a0;
+      }
+      #https-warning a { color: #8ab4f8; }
+    }
   </style>
 </head>
 <body>
@@ -53,14 +67,14 @@
   <a id="link" href="javascript:void(0)"></a>
 </div>
 
-<div id="https-warning" style="background:#fff3cd;padding:12px;border-radius:6px;margin-top:1rem;display:none;">
+<div id="https-warning">
   <strong>Security Notice:</strong> This server supports HTTPS.
   <a id="https-link" href="">Click here to access via HTTPS</a> for better encryption (AES-GCM with crypto.subtle).
 </div>
 
 <script>
 const httpsLink = "{{HTTPS_LINK}}";
-if (httpsLink) {
+if (httpsLink && typeof crypto !== 'undefined' && !crypto.subtle) {
   const warning = document.getElementById('https-warning');
   const link = document.getElementById('https-link');
   warning.style.display = 'block';

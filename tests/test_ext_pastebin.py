@@ -5,6 +5,8 @@ import os
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+import time
+import socket
 
 
 def generate_pastebin_payload(data: bytes, password: str) -> str:
@@ -104,10 +106,25 @@ class TestPastebin:
         page.goto(f"{moss_url}/pastebin", timeout=15000)
         page.wait_for_load_state("networkidle")
         
-        display_style = page.evaluate("() => document.getElementById('https-warning').style.display")
+        display_style = page.evaluate("() => window.getComputedStyle(document.getElementById('https-warning')).display")
         assert display_style == "none", f"Expected warning to be hidden, but display is: {display_style}"
         
         page.close()
+
+
+
+def get_local_ip():
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        # Connect to an external address; no data is actually sent
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+    except Exception:
+        raise Exception("unable to get local IP")
+        # ip = "127.0.0.1" # Fallback to localhost
+    finally:
+        s.close()
+    return ip
 
 
 @pytest.mark.moss_https
@@ -130,7 +147,6 @@ class TestPastebinHTTPSFlow:
 
     def test_https_flow(self, moss_runner, moss_url, browser_https, test_message):
         password = "e2e-test-password"
-        import time
         page = browser_https.new_page()
         page.on("console", lambda msg: print(f"Browser console: {msg.text}"))
         page.goto(f"{moss_url}/pastebin", timeout=15000)
@@ -149,14 +165,25 @@ class TestPastebinHTTPSFlow:
         assert result == test_message, f"Decrypted mismatch.\nExpected: {test_message}\nGot: {result}"
         page.close()
 
-    def test_https_warning_shown_when_https_supported(self, moss_runner, moss_url, browser_https):
-        """Test HTTPS warning when server supports HTTPS.
-        When server supports HTTPS, warning with link should be visible."""
+    def test_https_warning_not_shown_for_localhost_when_https_supported(self, moss_url, browser_https):
+        """Test HTTPS warning when server supports HTTPS but is accessed with HTTP on localhost."""
         page = browser_https.new_page()
         page.goto(f"{moss_url}/pastebin", timeout=15000)
         page.wait_for_load_state("networkidle")
         
-        display_style = page.evaluate("() => document.getElementById('https-warning').style.display")
+        display_style = page.evaluate("() => window.getComputedStyle(document.getElementById('https-warning')).display")
+        assert display_style == "none", f"Expected warning to be hidden, but display is: {display_style}"
+        
+        page.close()
+
+    def test_https_warning_shown_when_https_supported(self, moss_port, browser_https):
+        """Test HTTPS warning when server supports HTTPS but is accessed with HTTP."""
+        page = browser_https.new_page()
+        ip = get_local_ip() # Use a local IP because 127.0.0.1/localhost are treated as secure contexts and therefore have subtle crypto.
+        page.goto(f"http://{ip}:{moss_port}/pastebin", timeout=15000)
+        page.wait_for_load_state("networkidle")
+
+        display_style = page.evaluate("() => window.getComputedStyle(document.getElementById('https-warning')).display")
         assert display_style == "block", f"Expected warning to be visible, but display is: {display_style}"
         
         https_link = page.locator("#https-link")
