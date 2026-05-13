@@ -49,6 +49,12 @@ COMMON_HEADERS = [
     'sec-fetch-dest',
     'sec-fetch-mode',
     'sec-fetch-site',
+    'sec-fetch-user',
+    'sec-ch-ua',
+    'sec-ch-ua-mobile',
+    'sec-ch-ua-platform',
+    'upgrade-insecure-requests',
+    'pragma',
     'priority',
 ]
 
