@@ -27,17 +27,6 @@ import math
 
 __version__ = '0.7.0'
 
-__all__ = [
-    'MossRequestHandler', 'HttpMossServer',
-    'ProtocolProcessor', 'EnqueueProcessor', 'DefaultProcessor',
-    'LoggingEventHandler',
-    # Utility classes
-    'MossBuilder', 'MossRunner',
-    # Expose "config variables" to allow modification
-    'logger',
-    'COMMON_HEADERS', 'STATIC_FILE_EXTENSIONS',
-]
-
 MAX_LENGTH_TO_LOG = 1024
 
 # These headers will be filtered out when `ignore_common_headers` is specified.
@@ -783,49 +772,12 @@ class MossRequestHandler(BaseHTTPRequestHandler):
                 return False
         return True
 
-    # def peek_for_websocket(self, sock):
-    #     """NOTE: MSG_PEEK does not work with SSL sockets, likely bc SSL decryption can't be streamed but is done in blocks?"""
-    #     # Peek a bit generously.
-    #     data = sock.recv(MAX_REQUESTLINE_LENGTH + 1000, socket.MSG_PEEK)
-    #     lines = data.split(b'\n')
-    #     if len(lines) <= 1:
-    #         return False
-
-    #     # Parse headers.
-    #     for line in lines[1:]:
-    #         if not line:
-    #             break # End of headers, start of body.
-
-    #         try:
-    #             name, value = line.split(b':', 1)
-    #         except TypeError: # malformed header, invalid HTTP
-    #             logger.debug(f"Detected malformed HTTP line: {line}, skipping ws peek")
-    #             break
-            
-    #         if (name.strip().lower(), value.strip().lower()) == (b'upgrade', b'websocket'):
-    #             return True
-
-    #     return False
-
-    # def handle_websocket(self):
-    #     # self.push_request_event("CONNECT")
-    #     self.push_event()
-
     def handle(self):
         """Override handle to catch low-level socket errors gracefully."""
         
-        # if self.server.supports_ws:
-        #     self.is_ws = self.peek_for_websocket(self.connection)
-        #     if self.is_ws:
-        #         self.proto = "WSS" if self.is_ssl else "WS"
-        #         logger.info('Peeked and detected websocket request.')
         try:
             if not self.init_success:
                 raise InitSuccessError()
-            # if self.is_ws:
-            #     self.handle_websocket()
-            # else:
-            self.debug("handling request...")
             super().handle()
         except InitSuccessError:
             # This is just a simple control flow to handle bad init states.
@@ -923,13 +875,6 @@ def inject_class_utils(clss):
         cls.warning = lambda cls, msg: printe(f"{CLR_YLW}{msg}{CLR_RST}")
         cls.c = c
 
-# def wrap_processor_mixin(clss):
-#     out = []
-#     for cls in clss:
-#         @dataclass
-#         class WrappedClass(CommonProcessorMixin, cls): pass
-#         out.append(WrappedClass)
-#     return out
 
 @dataclass
 class HttpMossServer:
@@ -943,8 +888,6 @@ class HttpMossServer:
     headers: list[str] = _field(list, group="response", flags=["--header", "-H"], doc="Headers to include in server output. You can specify multiple of these, e.g. -H 'Set-Cookie: a=b' -H 'Content-Type: application/json'")
     enable_jsmin: bool = _field(False, group="response", flags=["--minify-js"], doc="Enable minification on large JavaScript responses")
     enable_gzip: bool = _field(False, group="response", flags=["--gzip"], doc="Enable gzip on static file extensions for lower network latency")
-
-    supports_ws: bool = _field(False, group="protocols", flags=["--websockets"], doc="Enable websocket support. Limited support, currently only detects the HTTP handshake")
 
     supports_https: bool = _field(False, group="https", flags=["--https"], doc="Enable HTTPS polyglot support")
     https_only: bool = _field(False, group="https", doc="Force HTTPS, ignore raw HTTP")
@@ -1082,11 +1025,6 @@ class ProtocolProcessor:
             req.proto = "WEBDAV/" + req.proto
 
 
-# @dataclass
-# class CommonProcessorMixin:
-#     """This class is used to "add" methods to Processors without the need of importing moss and inheriting anything."""
-
-
 @dataclass
 class EnqueueProcessor:
     """This is a default processor which handles pushing events from RequestHandlers to the main server thread."""
@@ -1172,9 +1110,6 @@ class LoggingEventHandler:
             except TypeError as e:
                 if 'missing' not in str(e):
                     raise e # Actual error.
-                # # Failed to fit parameters, move on.
-                # logger.debug(f'skipping {__class__.__name__}.{func.__name__}: {e}')
-                # logger.debug(traceback.format_exc())
                 continue
         else:
             # Default handler
