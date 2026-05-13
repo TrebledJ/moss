@@ -47,7 +47,7 @@ class TestFilter:
         assert event is not None
 
 
-@pytest.mark.moss_args("--filter", r"\d{3}")
+@pytest.mark.moss_args("--filter", r"code[= ]\d{3}")
 class TestFilterDigits:
     def test_matches_three_digits_in_url(cls, http_client, moss_runner):
         r = http_client.get("/?code=123")
@@ -119,3 +119,37 @@ class TestCorrelation:
         event = srv.wait(2)
         assert event is not None
         assert event.get("correlation_id") is None
+
+
+@pytest.mark.moss_args("--filter", "xyzzy", "--filter", "qwerty")
+class TestMultipleFilters:
+    def test_first_pattern_matches(cls, http_client, moss_runner):
+        r = http_client.get("/xyzzy")
+        assert r.status_code != 0
+        srv = moss_runner.servers[0]
+        event = expect_event(srv, filter_matches=True)
+        assert event is not None
+
+    def test_second_pattern_matches(cls, http_client, moss_runner):
+        r = http_client.get("/qwerty")
+        assert r.status_code != 0
+        srv = moss_runner.servers[0]
+        event = expect_event(srv, filter_matches=True)
+        assert event is not None
+
+    def test_neither_pattern_matches(cls, http_client, moss_runner):
+        r = http_client.get("/nope")
+        assert r.status_code != 0
+        srv = moss_runner.servers[0]
+        event = expect_event(srv, filter_matches=False)
+        assert event is not None
+
+
+@pytest.mark.moss_args("--filter", r"Host: 127\.0\.0\.1")
+class TestFilterHost:
+    def test_header_matches(cls, http_client, moss_runner):
+        r = http_client.get("/")
+        assert r.status_code != 0
+        srv = moss_runner.servers[0]
+        event = expect_event(srv, filter_matches=True)
+        assert event is not None

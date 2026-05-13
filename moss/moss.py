@@ -536,8 +536,10 @@ class MossRequestHandler(BaseHTTPRequestHandler):
         r = self.server.filter_regex
         if not r:
             return True
-        
-        return bool(r.search(requestline) or r.search(body.decode('utf-8', errors='replace')))
+
+        body_str = body.decode('utf-8', errors='replace')
+        headers_str = "; ".join(f"{k}: {v}" for k, v in self.headers.items())
+        return bool(r.search(requestline) or r.search(body_str) or r.search(headers_str))
 
     def extract_correlation_id(self, requestline, headers, body):
         r = self.server.correlation_regex
@@ -894,7 +896,7 @@ class HttpMossServer:
     certfile: str = _field(None, group="https", doc="Public key")
     keyfile: str = _field(None, group="https", doc="Private key")
 
-    filter_regex: str = _field(None, group="matching", flags=["--filter"], doc="Match request line and body")
+    filter_regex: list[str] = _field(list, group="matching", flags=["--filter"], doc="Match request line, headers, or body (supports multiple filters, OR'd)")
     correlation_regex: str = _field('', group="matching", flags=["--correlation", "-r"], doc="Extract correlation ID based on regex, this works independently of the filter")
 
     enable_blocking: bool = _field(False, group="security", flags=["--block-scanners"], doc="Enables automatic blocking of IPs which behave like scanners. To unblock, restart the server lol")
@@ -930,7 +932,7 @@ class HttpMossServer:
             k, v = h.split(':', 1)
             self.headers.append((k.strip(), v.strip()))
 
-        self.filter_regex = re.compile(self.filter_regex) if self.filter_regex else None
+        self.filter_regex = re.compile('|'.join(self.filter_regex)) if self.filter_regex else None
         self.correlation_regex = re.compile(self.correlation_regex) if self.correlation_regex else None
 
         if self.server_header == 'random':
