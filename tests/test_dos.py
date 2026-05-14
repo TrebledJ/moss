@@ -75,6 +75,7 @@ def expect_anomaly_detail(srv, payload):
 #   Tests
 # ────────────────────────────────────────
 
+@pytest.mark.slow
 @pytest.mark.moss_args("-vv", "--status-code", 201)
 class TestDOS:
     def test_partial_header_sanity_check(cls, moss_port):

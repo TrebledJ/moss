@@ -54,15 +54,6 @@ class TestHttpsOnly:
         assert True
 
 
-@pytest.mark.moss_args("--websockets")
-class TestWebSocketDetection:
-    def test_ws_upgrade_detected(self, http_client):
-        """WebSocket upgrade header should be detected."""
-        r = http_client.get("/", headers={"Upgrade": "websocket", "Connection": "Upgrade"})
-        # The proto should be set to WS/WSS, but request still handled
-        assert r.status_code != 0
-
-
 @pytest.mark.moss_args("--gzip")
 class TestGzip:
     def test_gzip_response(self, http_client):

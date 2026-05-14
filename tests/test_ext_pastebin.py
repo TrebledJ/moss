@@ -73,6 +73,7 @@ class TestPastebin:
         decrypted_data = decrypt_pastebin_payload(match.group(1).strip(), password)
         assert decrypted_data == original_data
 
+    @pytest.mark.slow
     def test_http_flow(self, moss_runner, moss_url, browser_http):
         """Test complete encrypt/decrypt cycle via headless browser over HTTP."""
         password = "http-flow-password"
@@ -99,6 +100,7 @@ class TestPastebin:
         
         page.close()
 
+    @pytest.mark.slow
     def test_https_warning_hidden_when_no_https(self, moss_runner, moss_url, browser_http):
         """Test HTTPS warning in pastebin form using headless browser.
         When server does not support HTTPS, warning should be hidden."""
@@ -127,6 +129,7 @@ def get_local_ip():
     return ip
 
 
+@pytest.mark.slow
 @pytest.mark.moss_https
 @pytest.mark.moss_args("-e", "pastebin")
 class TestPastebinHTTPSFlow:
@@ -237,6 +240,7 @@ class TestPastebinFixedPath:
 class TestPastebinHardcodedPassword:
     """Test the --pastebin-password flag."""
     
+    @pytest.mark.slow
     def test_hardcoded_password_auto_decrypt(self, moss_runner, moss_url, browser_https):
         """Test that paste with hardcoded password auto-decrypts in browser."""
         test_message = "Auto-decrypt with hardcoded password"

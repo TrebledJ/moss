@@ -77,6 +77,7 @@ def expect_anomaly_detail(srv, payload):
 #   Applicable: idle timeout, slow headers (Slowloris), slow body (R.U.D.Y.)
 # ────────────────────────────────────────────────
 
+@pytest.mark.slow
 @pytest.mark.moss_https
 class TestIdleHTTPS:
     def test_idle_connection_regression_is_open(cls, moss_port):
@@ -98,6 +99,7 @@ class TestIdleHTTPS:
         expect_anomaly(srv, "socket open", with_tags=["portscan"])
 
 
+@pytest.mark.slow
 @pytest.mark.moss_https
 class TestSlowHeadersHTTPS:
     """Slowloris-style attacks over HTTPS"""
@@ -157,6 +159,7 @@ class TestSlowHeadersHTTPS:
                 assert False, "expected anomaly"
 
 
+@pytest.mark.slow
 @pytest.mark.moss_https
 @pytest.mark.moss_args("-vv", "--status-code", 201)
 class TestSlowBodyHTTPS:
@@ -234,6 +237,7 @@ class TestSlowBodyHTTPS:
                 assert False, "HTTPS Server allowed very slow large POST body"
 
 
+@pytest.mark.slow
 @pytest.mark.moss_https
 @pytest.mark.moss_args("-vv", "--status-code", 201)
 class TestNormalAfterAdversarialHTTPS:
