@@ -28,10 +28,6 @@ import json
 import random
 
 try:
-    import readline
-except ImportError:
-    pass
-try:
     from rich.console import Console as RichConsole
     HAS_RICH = True
 except ImportError:
@@ -54,8 +50,7 @@ CORS = {"Access-Control-Allow-Origin": "*"}
 # ────────────────────────────────────────────────
 
 BROWSER_JS = """(function(){
-var b='';try{var s=document.currentScript&&document.currentScript.src;if(s){var u=s.split('?')[0];b=u.substring(0,u.lastIndexOf('/'))}}catch(e){}
-if(!b)b=window.__MOSS_BASE||window.location.origin;
+var b='{DEBUGGER_BASE}';
 var i=-1,p=0,pct=10,sleepy=5;
 function generateId(length = 6) {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
@@ -100,6 +95,7 @@ class DebuggerMixin:
     debugger_path: str = _field("/debugger/{RANDOM}", group=GROUP, flags=["--debugger-path"], doc="URL path for the interactive debugger JS payload. Use {RANDOM} to insert a random ID in the path")
     debugger_no_input: bool = _field(False, group=GROUP, flags=["--debugger-no-input"], doc="Disable the TUI input thread (for testing)")
     debugger_random_id_length: int = _field(6, group=GROUP, flags=["--debugger-id-length"], doc="The length of the random ID. Consider using the --block-scanners flag to mitigate against brute-forcing. Set to 0 to replace {RANDOM} with nothing")
+    debugger_base: str = _field(None, group=GROUP, required=True, doc="Origin for the base URL for callback, e.g. https://your-server.com")
 
     def __post_init__(self):
         self._pending = []
@@ -116,6 +112,7 @@ class DebuggerMixin:
             self.debugger_path = self.debugger_path.replace("{RANDOM}", instance_id)
         else:
             self.debugger_path = self.debugger_path.replace("/{RANDOM}", "")
+        self._browser_js = self._browser_js.replace("{DEBUGGER_BASE}", self.debugger_base)
         self._browser_js = self._browser_js.replace("{DEBUGGER_PATH}", self.debugger_path)
 
         if not HAS_RICH:
