@@ -4,8 +4,8 @@ ext/debugger.py
 Interactive JS Debugging Agent for MOSS.
 
 Serves a JS payload for browser injection that executes JS commands
-received from a TUI prompt and returns results. Optionally integrates
-with prompt_toolkit for history and smoother (async) output.
+received from a TUI prompt and returns results. Uses rich for a
+smoother TUI experience when available, with a plain input() fallback.
 
 Usage:
     moss -e debugger -p 8000
@@ -20,7 +20,6 @@ CLI flags:
     --debugger-no-input         Disable the TUI input thread (for testing)
 """
 
-from contextlib import nullcontext
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit, parse_qs
 import threading
@@ -29,12 +28,10 @@ import json
 import random
 
 try:
-    from prompt_toolkit import PromptSession
-    from prompt_toolkit.history import InMemoryHistory
-    from prompt_toolkit.patch_stdout import patch_stdout
-    HAS_PROMPT_TOOLKIT = True
+    from rich.console import Console as RichConsole
+    HAS_RICH = True
 except ImportError:
-    HAS_PROMPT_TOOLKIT = False
+    HAS_RICH = False
 
 GROUP = "debugger (ext/debugger.py)"
 
@@ -106,14 +103,14 @@ class DebuggerMixin:
             self.debugger_path = self.debugger_path.replace("/{RANDOM}", "")
             self._browser_js = self._browser_js.replace("/{RANDOM}", "")
 
-        try:
-            import prompt_toolkit
-        except ImportError:
-            self.warning(f"debugger works best with the prompt_toolkit package:")
+        if not HAS_RICH:
+            self.warning(f"debugger works best with the rich package:")
             self.warning(f"")
-            self.warning(f"\tpip install prompt_toolkit")
+            self.warning(f"\tpip install rich")
             self.warning(f"")
             self.warning(f"This is an OPTIONAL dependency which makes the TUI feel smoother.")
+
+        self._console = RichConsole() if HAS_RICH else None
 
         super().__post_init__()
 
@@ -124,10 +121,11 @@ class DebuggerMixin:
     def _print_result(self, r):
         name = r.get("name", "???")
         cid = r["id"]
-        if r.get("error"):
-            print(f"  \u2717 ({name})[{cid}] {r['error']}")
+        msg = f"  \u2717 ({name})[{cid}] {r['error']}" if r.get("error") else f"  \u2713 ({name})[{cid}] {r.get('result', 'undefined')}"
+        if self._console:
+            self._console.print(msg, style="red" if r.get("error") else "green")
         else:
-            print(f"  \u2713 ({name})[{cid}] {r.get('result', 'undefined')}")
+            print(msg)
 
     # TODO: figure out a cleaner of managing mixin variables so that we can avoid making the mistake of clearing variables when they are actually copied (shallowly) to the server object.
     def _drain_results(self):
@@ -139,29 +137,25 @@ class DebuggerMixin:
             self._print_result(r)
 
     def _start_input_thread(self):
-        session = PromptSession(history=InMemoryHistory()) if HAS_PROMPT_TOOLKIT else None
-        ctx = patch_stdout() if session else nullcontext()
-
         def _input_loop():
-            with ctx:
-                while not self._shutdown:
-                    self._drain_results()
-                    try:
-                        if session:
-                            code = session.prompt(f"debug [{self._next_id}]> ")
-                        else:
-                            code = input(f"debug [{self._next_id}]> ")
-                    except (EOFError, KeyboardInterrupt):
-                        break
-                    if not code.strip():
-                        continue
-                    if time.time() - self.server._last_browser_poll > BROWSER_TIMEOUT:
-                        print(f"(no browser connected — inject the debugger first)")
-                        continue
-                    cmd_id = self._next_id
-                    self._next_id += 1
-                    with self._lock:
-                        self.server._pending.append({"id": cmd_id, "code": code})
+            while not self._shutdown:
+                self._drain_results()
+                try:
+                    if self._console:
+                        code = self._console.input(f"debug [{self._next_id}]> ")
+                    else:
+                        code = input(f"debug [{self._next_id}]> ")
+                except (EOFError, KeyboardInterrupt):
+                    break
+                if not code.strip():
+                    continue
+                if time.time() - self.server._last_browser_poll > BROWSER_TIMEOUT:
+                    print(f"(no browser connected — inject the debugger first)")
+                    continue
+                cmd_id = self._next_id
+                self._next_id += 1
+                with self._lock:
+                    self.server._pending.append({"id": cmd_id, "code": code})
 
         t = threading.Thread(target=_input_loop, daemon=True)
         t.start()
