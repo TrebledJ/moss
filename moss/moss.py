@@ -880,8 +880,9 @@ def inject_class_utils(clss):
 
 @dataclass
 class HttpMossServer:
-    host: str = _field('0.0.0.0', flags=["--bind", "-b", "--host"], doc="Bind to this address")
+    host: str = _field('0.0.0.0', flags=["--bind", "-b"], doc="Bind to this address (e.g. 0.0.0.0 to listen on all interfaces; 127.0.0.1 to listen only on localhost)")
     port: int = _field(8000, flags=["--port", "-p"])
+    hostname: str = _field(None, flags=["--host", "--hostname"], doc="Hostname which resolves to the server (e.g. example.com). This is completely optional and used by some extensions to resolve the host")
     
     RequestHandlerClass = MossRequestHandler
     RateLimiterClass = BadnessRateLimiter
@@ -924,6 +925,17 @@ class HttpMossServer:
         server.running = False
         server.ratelimiter = self.RateLimiterClass()
         # super().__post_init__() # No super post init. This class should be last one in a mixin chain.
+
+    def require_hostname(self, reason="", failFast=False):
+        if not self.hostname:
+            clr = CLR_RED if failFast else CLR_YLW
+            tone = 'required' if failFast else 'missing'
+            if reason:
+                printe(f"{clr}The --hostname argument is {tone}:\n{reason}{CLR_RST}")
+            else:
+                printe(f"{clr}The --hostname argument is {tone}.{CLR_RST}")
+            if failFast:
+                sys.exit(1)
 
     def _validate(self):
         # Convert headers into list of pairs.

