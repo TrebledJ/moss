@@ -175,7 +175,11 @@ class DebuggerMixin:
 
         proto = 'https' if self.server.supports_https else 'http'
         hostname = self.server.hostname or ""
-        self.server.instance.require_hostname("The debugger extension's browser agent uses the hostname to point to the server.\nAbsence of a hostname may lead the agent failing to connect, particularly in no-origin browser-like contexts.", failFast=False)
+
+        if not self.hostname:
+            self.warning("The debugger extension's browser agent uses --hostname to point to the server.")
+            self.warning("Absence of a hostname may lead the agent failing to connect, particularly in no-origin contexts.")
+
         # If no hostname is provided, we use the empty string, which means paths in the browser will be treated as absolute paths.
         # For instance, fetch('/abc') makes a request to the /abc path at the browser's origin. This works for most browsers.
         # However, some contexts do NOT have an origin, such as isolated webviews on mobile.

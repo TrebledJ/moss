@@ -926,17 +926,6 @@ class HttpMossServer:
         server.ratelimiter = self.RateLimiterClass()
         # super().__post_init__() # No super post init. This class should be last one in a mixin chain.
 
-    def require_hostname(self, reason="", failFast=False):
-        if not self.hostname:
-            clr = CLR_RED if failFast else CLR_YLW
-            tone = 'required' if failFast else 'missing'
-            if reason:
-                printe(f"{clr}The --hostname argument is {tone}:\n{reason}{CLR_RST}")
-            else:
-                printe(f"{clr}The --hostname argument is {tone}.{CLR_RST}")
-            if failFast:
-                sys.exit(1)
-
     def _validate(self):
         # Convert headers into list of pairs.
         headers, self.headers = self.headers, []
