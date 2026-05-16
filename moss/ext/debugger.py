@@ -173,8 +173,8 @@ class DebuggerMixin:
 
         super().__post_init__()
 
-        proto = 'https' if self.server.supports_https else 'http'
-        hostname = self.server.hostname or ""
+        proto = 'https' if self.supports_https else 'http'
+        hostname = self.hostname or ""
 
         if not self.hostname:
             self.warning("The debugger extension's browser agent uses --hostname to point to the server.")
@@ -194,8 +194,6 @@ class DebuggerMixin:
                 self.warning(f"")
                 self.warning(f"\tpip install rjsmin")
 
-        self.server._browser_js = self._browser_js
-
         if not self.debugger_no_input:
             self._start_input_thread()
         
@@ -210,12 +208,11 @@ class DebuggerMixin:
         else:
             print(msg)
 
-    # TODO: figure out a cleaner of managing mixin variables so that we can avoid making the mistake of clearing variables when they are actually copied (shallowly) to the server object.
     def _drain_results(self):
         drained = []
         with self._lock:
-            while self.server._results:
-                drained.append(self.server._results.pop(0))
+            while self._results:
+                drained.append(self._results.pop(0))
         for r in drained:
             self._print_result(r)
 
@@ -232,13 +229,13 @@ class DebuggerMixin:
                     break
                 if not code.strip():
                     continue
-                if time.time() - self.server._last_browser_poll > BROWSER_TIMEOUT:
+                if time.time() - self._last_browser_poll > BROWSER_TIMEOUT:
                     print(f"(no browser connected — inject the debugger first)")
                     continue
                 cmd_id = self._next_id
                 self._next_id += 1
                 with self._lock:
-                    self.server._pending.append({"id": cmd_id, "code": code})
+                    self._pending.append({"id": cmd_id, "code": code})
 
         t = threading.Thread(target=_input_loop, daemon=True)
         t.start()
@@ -321,7 +318,7 @@ class DebuggerProcessor:
             with req.server._lock:
                 req.server._results.append(data)
                 # req.server._pending = [c for c in req.server._pending if c["id"] != data["id"]]
-            req.server.instance._print_result(data)
+            req.server._print_result(data)
             req.send_response_full(200, content=b'{"ok":true}', mime="application/json", headers=CORS)
             return True
 

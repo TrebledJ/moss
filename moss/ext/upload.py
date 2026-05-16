@@ -106,12 +106,12 @@ class UploadProcessor:
         
         filename = sanitise_filename(filename)
         length = len(req.body)
-        if not req.server.instance.check_upload_limit(length):
+        if not req.server.check_upload_limit(length):
             self.printerr(f"Incoming file exceeded max file size ({length} > {req.server.upload_max_size})")
             req.send_response_full(413) # Content too large.
             return True
         
-        ok, msg = req.server.instance.upload_file(filename, req.body)
+        ok, msg = req.server.upload_file(filename, req.body)
         if ok:
             req.send_response_full(201, content=b'ok', mime='text/plain')
             self.logger.info(f"Saved {len(req.body)} bytes to {msg}")

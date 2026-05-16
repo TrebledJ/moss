@@ -879,7 +879,7 @@ def inject_class_utils(clss):
 
 
 @dataclass
-class HttpMossServer:
+class HttpMossServer(ThreadingHTTPServer):
     host: str = _field('0.0.0.0', flags=["--bind", "-b"], doc="Bind to this address (e.g. 0.0.0.0 to listen on all interfaces; 127.0.0.1 to listen only on localhost)")
     port: int = _field(8000, flags=["--port", "-p"])
     hostname: str = _field(None, flags=["--host", "--hostname"], doc="Hostname which resolves to the server (e.g. example.com). This is completely optional and used by some extensions to resolve the host")
@@ -905,7 +905,6 @@ class HttpMossServer:
     def __post_init__(self):
         self._validate()
         self.processors = []
-        params = self.__dict__.items()
 
         if self.enable_jsmin:
             try:
@@ -917,13 +916,12 @@ class HttpMossServer:
                 printe(f"{CLR_RST}")
                 sys.exit(1)
 
-        self.server = server = ThreadingHTTPServer((self.host, self.port), self.RequestHandlerClass)
-        server.queue = self.queue = queue.Queue(maxsize=QUEUE_MAX_SIZE)
-        for attr, value in params:
-            setattr(server, attr, value)
-        server.instance = self
-        server.running = False
-        server.ratelimiter = self.RateLimiterClass()
+        self.queue = queue.Queue(maxsize=QUEUE_MAX_SIZE)
+        self.running = False
+        self.ratelimiter = self.RateLimiterClass()
+
+        # @dataclass __init__ skips parent __init__, so call it explicitly
+        ThreadingHTTPServer.__init__(self, (self.host, self.port), self.RequestHandlerClass)
         # super().__post_init__() # No super post init. This class should be last one in a mixin chain.
 
     def _validate(self):
@@ -957,8 +955,8 @@ class HttpMossServer:
                 sys.exit(1)
 
         printe(f"{CLR_GRN}Server listening on {self.host}:{self.port}{CLR_RST}")
-        if self.filter_regex: printe(f"{CLR_YLW}Filter regex:{CLR_RST} {self.filter_regex}")
-        if self.correlation_regex: printe(f"{CLR_YLW}Correlation ID regex:{CLR_RST} {self.correlation_regex}")
+        if self.filter_regex: printe(f"{CLR_YLW}Filter regex:{CLR_RST} {self.filter_regex.pattern}")
+        if self.correlation_regex: printe(f"{CLR_YLW}Correlation ID regex:{CLR_RST} {self.correlation_regex.pattern}")
 
     @classmethod
     def from_args(cls, args: argparse.Namespace):
@@ -969,24 +967,19 @@ class HttpMossServer:
         return inst
 
 
-    @classmethod
-    def _run_http_server(cls, server):
-        server.serve_forever()
-        server.server_close()
-        
     def serve(self):
-        if self.server.running:
+        if self.running:
             return
-        self.server.running = True
-        self.thread = threading.Thread(target=self.__class__._run_http_server, args=(self.server, ))
+        self.running = True
+        self.thread = threading.Thread(target=ThreadingHTTPServer.serve_forever, args=(self,))
         self.thread.start()
 
     def serve_forever(self):
         self.serve()
         self.thread.join()
-    
+
     def wait(self, timeout=None):
-        if self.server.running and timeout:
+        if self.running and timeout is not None:
             # "Blocking" with timeout.
             try:
                 return self.queue.get(timeout=timeout)
@@ -994,7 +987,7 @@ class HttpMossServer:
                 return None
         else:
             # Wait forever.
-            while self.server.running:
+            while self.running:
                 try:
                     # Use polling here, in case we need to quit the thread (e.g. due to SIGINT / ^C).
                     if item := self.queue.get(timeout=0.2):
@@ -1004,8 +997,9 @@ class HttpMossServer:
             return None
 
     def shutdown(self):
-        self.server.running = False
-        self.server.shutdown()
+        self.running = False
+        ThreadingHTTPServer.shutdown(self)
+        self.server_close()
 
 
 @dataclass
