@@ -412,6 +412,18 @@ class MossRequestHandler(BaseHTTPRequestHandler):
             else:
                 self.handle_anomaly(f'detected TLS/SSL or other protocol, but https was not enabled')
                 return
+        elif (bytes_[0] & 0x80) == 0x80 and bytes_[2] == 0x01 and bytes_[3] == 0x03:
+            self.proto = "SSLv2"
+            # Client Version (bytes_[3:4])
+            # (3, 0) -> SSLv3.0
+            # (3, 1) -> TLSv1.0
+            # (3, 2) -> TLSv1.1
+            # (3, 3) -> TLSv1.2
+            # (3, 4) -> TLSv1.3
+            self.handle_anomaly(f'detected SSLv2-compat handshake, but MOSS is not compatible', details=bytes_)
+            # https://stackoverflow.com/questions/4340492/understanding-the-tls-ssl-protocol
+            # cf. RFC5246 Appendix E2. https://www.rfc-editor.org/rfc/rfc5246#appendix-E.2
+            return
         else:
             if server.https_only:
                 self.handle_anomaly(f'expected HTTPS only, but got something else', details=bytes_)
@@ -1593,6 +1605,14 @@ class MossBuilder:
 
         runner = self.make_runner(namespace)
         return runner
+    
+    def api(self, ServerClass=HttpMossServer, RequestHandlerClasss=MossRequestHandler):
+        self.load_processor(ProtocolProcessor, EnqueueProcessor)
+        self.load_extensions_from_args()
+        self.make_server(ServerClass, RequestHandlerClasss)
+        namespace = self.parse_args()
+        runner = self.make_runner(namespace)
+        return runner
 
 class MossRunner:
     """Utility class to help run a moss server."""
@@ -1621,7 +1641,7 @@ class MossRunner:
                 self.handle_event(event)
 
     def shutdown(self):
-        printe('shutting down...')
+        logger.info('shutting down...')
         for server in self.servers:
             server.shutdown()
 
