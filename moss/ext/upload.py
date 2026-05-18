@@ -55,8 +55,8 @@ class UploadServerMixin:
         return list(self.uploaded_files)
     
     def get_uploaded_file(self, filename: str) -> bytes:
-        if filename in self.uploaded_file:
-            return self.uploaded_file[filename]
+        if filename in self.uploaded_files:
+            return self.uploaded_files[filename]
         
         with open(filename, "rb") as f:
             data = f.read()
