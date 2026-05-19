@@ -63,7 +63,7 @@ class StealthyUploadMixin:
         try:
             profile = self.load_profile(self.stealth_profile_path)
         except (FileNotFoundError, json.decoder.JSONDecodeError) as e:
-            self.printerr(f"[stealthnet] error loading profile: {e}")
+            self.error(f"[stealthnet] error loading profile: {e}")
             sys.exit(1)
 
         self.stealth_profile_str = json.dumps(profile).encode('utf-8')
@@ -72,27 +72,27 @@ class StealthyUploadMixin:
             try:
                 import jsonschema
             except ImportError:
-                self.printerr(f"[stealthnet] stealthnet requires the jsonschema package:")
-                self.printerr(f"[stealthnet] ")
-                self.printerr(f"[stealthnet] \tpip install jsonschema")
-                self.printerr(f"[stealthnet] ")
-                self.printerr(f"[stealthnet] If you're not aiming to customise the stealth profile,")
-                self.printerr(f"[stealthnet] you can skip validation by passing --stealth-no-validate")
+                self.error(f"[stealthnet] stealthnet requires the jsonschema package:")
+                self.error(f"[stealthnet] ")
+                self.error(f"[stealthnet] \tpip install jsonschema")
+                self.error(f"[stealthnet] ")
+                self.error(f"[stealthnet] If you're not aiming to customise the stealth profile,")
+                self.error(f"[stealthnet] you can skip validation by passing --stealth-no-validate")
                 sys.exit(1)
             try:
                 jsonschema.validate(profile, JSON_SCHEMA)
             except jsonschema.ValidationError as e:
-                self.printerr(f"[stealthnet] JSON Schema ValidationError: {e.message}")
-                self.printerr(f"[stealthnet] Path to error: {e.json_path}")
+                self.error(f"[stealthnet] JSON Schema ValidationError: {e.message}")
+                self.error(f"[stealthnet] Path to error: {e.json_path}")
                 sys.exit(1)
 
         try:
             self.stealth_catalogue = make_catalogue_from_profile(profile)
             self.stealth_decryptor = make_decryptor_from_profile(profile)
         except (KeyError, TypeError, JDSLProfileError) as e:
-            self.printerr(f"[stealthnet] Error loading profile ({e.__class__.__name__}): {e}")
+            self.error(f"[stealthnet] Error loading profile ({e.__class__.__name__}): {e}")
             sys.exit(1)
-        self.printstatus(f"[stealthnet] Loaded profile '{self.stealth_profile_path}', {len(self.stealth_catalogue.requests)} requests")
+        self.status(f"[stealthnet] Loaded profile '{self.stealth_profile_path}', {len(self.stealth_catalogue.requests)} requests")
 
         super().__post_init__()
 
@@ -163,13 +163,13 @@ class StealthyUploadProcessor:
             request = stealth["request"]
         except KeyError:
             # 502 is reserved by the server
-            self.printerr(f"[stealthnet] expected request key")
+            self.error(f"[stealthnet] expected request key")
             req.send_response_full(502)
             return None
 
         errh = request.on_action("error")
         if not errh:
-            self.printerr(f"[stealthnet] expected error action")
+            self.error(f"[stealthnet] expected error action")
             req.send_response_full(502)
             return None
         err_stat = errh["status"]()

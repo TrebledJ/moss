@@ -81,14 +81,14 @@ class FileServerMixin:
 
         if self._memory_mode:
             if self.upload_dir:
-                self.printerr("[file] --upload-dir cannot be used with [[memory]] mode")
+                self.error("[file] --upload-dir cannot be used with [[memory]] mode")
                 sys.exit(1)
-            self.printstatus("[file] in-memory mode enabled")
+            self.status("[file] in-memory mode enabled")
         else:
             if not self.directory:
                 self.directory = '.'
             if not Path(self.directory).exists():
-                self.printerr(f"[file] path does not exist: {self.directory}")
+                self.error(f"[file] path does not exist: {self.directory}")
                 sys.exit(1)
             if self.upload_dir:
                 p = Path(self.upload_dir)
@@ -100,11 +100,11 @@ class FileServerMixin:
             Path(self.upload_dir).mkdir(parents=True, exist_ok=True)
 
         if not self.fileserver_url_path.startswith('/'):
-            self.printerr(f"[file] base path does not start with /: {self.fileserver_url_path}")
+            self.error(f"[file] base path does not start with /: {self.fileserver_url_path}")
             sys.exit(1)
 
         if not self.upload_url_path.startswith('/'):
-            self.printerr(f"[file] upload path does not start with /: {self.upload_url_path}")
+            self.error(f"[file] upload path does not start with /: {self.upload_url_path}")
             sys.exit(1)
 
         super().__post_init__()
@@ -241,25 +241,25 @@ class FileServerProcessor:
 
         filename = req.headers.get('x-file-name')
         if not filename:
-            self.printerr(f"[file] POST {req.server.upload_url_path} request missing filename")
+            self.error(f"[file] POST {req.server.upload_url_path} request missing filename")
             req.send_response_full(400)
             return True
 
         filename = sanitise_filename(filename)
         if not filename or filename in ('.', '..'):
-            self.printerr(f"[file] POST {req.server.upload_url_path} request has invalid filename")
+            self.error(f"[file] POST {req.server.upload_url_path} request has invalid filename")
             req.send_response_full(400)
             return True
 
         if len(req.body) > req.server.max_size:
-            self.printerr(f"[file] Incoming file exceeded max size ({len(req.body)} > {req.server.max_size})")
+            self.error(f"[file] Incoming file exceeded max size ({len(req.body)} > {req.server.max_size})")
             req.send_response_full(413)
             return True
 
         try:
             req.server.serve_file(filename, req.body)
         except (FileNotFoundError, PermissionError) as e:
-            self.printerr(f"[file] Failed to write upload: {e}")
+            self.error(f"[file] Failed to write upload: {e}")
             req.send_response_full(500, content=str(e).encode(), mime='text/plain')
             return True
 

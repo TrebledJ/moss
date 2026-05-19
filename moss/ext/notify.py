@@ -63,13 +63,13 @@ class NotificationEventHandler:
 
         if self.notify_platform:
             if not self.webhook_url:
-                self.printerr("[notify] --webhook-url was not provided")
+                self.error("[notify] --webhook-url was not provided")
                 sys.exit(1)
 
             self.http = urllib3.PoolManager()
 
         if self.notify_platform:
-            self.printstatus(f"[notify] Notifications: {self.notify_platform} (id: {self.identifier})")
+            self.status(f"[notify] Notifications: {self.notify_platform} (id: {self.identifier})")
 
     def handle_event(self, data):
         try:

@@ -884,8 +884,8 @@ def inject_class_utils(clss):
         if not hasattr(cls, "logger"):
             cls.logger = logger
         cls.printe = lambda cls, msg: printe(f"{msg}")
-        cls.printerr = lambda cls, msg: printe(f"{CLR_RED}{msg}{CLR_RST}")
-        cls.printstatus = lambda cls, msg: printe(f"{CLR_CYN}{msg}{CLR_RST}")
+        cls.error = lambda cls, msg: printe(f"{CLR_RED}{msg}{CLR_RST}")
+        cls.status = lambda cls, msg: printe(f"{CLR_CYN}{msg}{CLR_RST}")
         cls.warning = lambda cls, msg: printe(f"{CLR_YLW}{msg}{CLR_RST}")
         cls.c = c
 

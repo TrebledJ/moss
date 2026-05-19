@@ -197,7 +197,7 @@ class DebuggerMixin:
         if not self.debugger_no_input:
             self._start_input_thread()
         
-        self.printstatus(f"[debugger] Debugger: {proto}://{hostname or '127.0.0.1'}:{self.port}{self.debugger_path}")
+        self.status(f"[debugger] Debugger: {proto}://{hostname or '127.0.0.1'}:{self.port}{self.debugger_path}")
 
     def _print_result(self, r):
         name = r.get("name", "???")

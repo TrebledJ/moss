@@ -45,16 +45,16 @@ class AuthMixin:
         if not self.token_auth and not self.basic_auth:
             self.logger.warning(f"auth module was enabled but no auth settings were provided")
         if self.token_auth and self.basic_auth:
-            self.printerr(f"[auth] expected one of token_auth or basic_auth, but both were provided")
+            self.error(f"[auth] expected one of token_auth or basic_auth, but both were provided")
             sys.exit(1)
 
         if self.basic_auth and ":" not in self.basic_auth:
-            self.printerr(f"[auth] expected basic auth to contain colon but got ({self.basic_auth})")
+            self.error(f"[auth] expected basic auth to contain colon but got ({self.basic_auth})")
             sys.exit(1)
         
         if (self.token_auth or "").strip() == "generate":
             self.token_auth = random_id(32)
-            self.printstatus(f"[auth] Authorization: Bearer {self.token_auth}")
+            self.status(f"[auth] Authorization: Bearer {self.token_auth}")
 
         self.expect_header = f"Bearer {self.token_auth}"
         if self.basic_auth:

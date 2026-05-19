@@ -50,15 +50,15 @@ class ExampleMixin:
         # ── Injected utilities ──────────────────────────────────────────
         # self.logger        → Python logging.Logger instance
         # self.printe(msg)   → print to stderr
-        # self.printerr(msg) → print red to stderr
-        # self.printstatus   → print cyan to stderr
+        # self.error(msg) → print red to stderr
+        # self.status   → print cyan to stderr
         # self.warning(msg)  → print yellow to stderr
         # self.c             → colour constants (c.CYN, c.GRN, c.YLW, c.BLU, c.RED, c.RST)
         self.logger.info(f"ExampleMixin initialising: flag={self.example_flag}, "
                          f"count={self.example_count}, toggle={self.example_toggle}")
 
         if self.example_count < 0:
-            self.printerr("[example] example-count must be non-negative")
+            self.error("[example] example-count must be non-negative")
             import sys
             sys.exit(1)
 
@@ -73,7 +73,7 @@ class ExampleMixin:
         self._seen_requests = []
 
         if self.hostname:
-            self.printstatus("[example] bound to hostname: {self.hostname}")
+            self.status("[example] bound to hostname: {self.hostname}")
 
         # ── Chain ────────────────────────────────────────────────────────
         # MUST call super().__post_init__() so the next MRO entry runs.
@@ -98,7 +98,7 @@ class ExampleProcessor:
     example_arg_from_processor: str = _field("wassup", group=GROUP, doc="Example of an argument in the processor")
 
     def __post_init__(self):
-        self.printstatus(f"processor arg: {self.example_arg_from_processor}")
+        self.status(f"processor arg: {self.example_arg_from_processor}")
 
     def get_services(self, server):
         return [
@@ -211,7 +211,7 @@ class ExampleHandler:
     example_arg_from_handler: str = _field("ketchup", group=GROUP, doc="Example of an argument in the handler")
 
     def __post_init__(self):
-        self.printstatus(f"handler arg: {self.example_arg_from_handler}")
+        self.status(f"handler arg: {self.example_arg_from_handler}")
         self.events = []
 
     def get_events(self, event_type=None):
@@ -230,7 +230,7 @@ class ExampleHandler:
 
         # Only print for our custom example events
         if data.get("example_event"):
-            self.printstatus(
+            self.status(
                 f"[example] ExampleHandler got event: {data.get('example_path')} "
                 f"from {data.get('client')} [{data.get('proto')}]"
             )
