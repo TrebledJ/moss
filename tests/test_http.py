@@ -101,8 +101,8 @@ class TestRequestLine:
 
 from moss.moss import MAX_BODY_SIZE
 
-@pytest.mark.moss_args("-vv", "--status-code", 200)
-# @pytest.mark.override_moss_port(8000)
+@pytest.mark.moss_args("--status-code", 200)
+@pytest.mark.slow
 class TestRequestTooLarge:
     def test_body_sanity_smol(cls, http_client):
         payload = 10 * "a"

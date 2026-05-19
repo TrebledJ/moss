@@ -32,7 +32,8 @@
 
 # [files]
 #--file-directory ''
-#--file-base-path /static
+#--file-url-path /static
+#--file-index
 
 # [logging]
 #--filter /mysecretendpoint

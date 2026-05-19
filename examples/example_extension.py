@@ -1,5 +1,5 @@
 """
-ext/example.py
+examples/example_extension.py
 
 Comprehensive extension exercising every major MOSS extension API.
 Serves as both a functional test fixture and reference documentation.
@@ -11,14 +11,14 @@ Covers:
 - All req.* response methods and req.server.* attributes
 
 Usage:
-    moss -e example -p 9999
-    moss -e example --exercise-flag hello --exercise-count 3 --exercise-toggle
+    moss -e examples/example_extension -p 9999
+    moss -e examples/example_extension --example-flag hello --example-count 3 --example-toggle
 """
 
 from dataclasses import dataclass, field
 import json
 
-GROUP = "example (ext/example.py)"
+GROUP = "example (examples/example_extension.py)"
 
 
 def _field(default, group=None, doc="", metadata={}, flags=[], choices=[], **kwargs):
@@ -36,15 +36,15 @@ def _field(default, group=None, doc="", metadata={}, flags=[], choices=[], **kwa
 # The __post_init__ chain runs in MRO order; call super().__post_init__() at the end.
 
 @dataclass
-class ExerciseMixin:
-    exercise_flag: str = _field("default", group=GROUP, flags=["--exercise-flag"],
-                                doc="A string flag for the exercise extension")
-    exercise_count: int = _field(1, group=GROUP, flags=["--exercise-count"],
+class ExampleMixin:
+    example_flag: str = _field("default", group=GROUP, flags=["--example-flag"],
+                                doc="A string flag for the example extension")
+    example_count: int = _field(1, group=GROUP, flags=["--example-count"],
                                  doc="An integer flag")
-    exercise_toggle: bool = _field(False, group=GROUP, flags=["--exercise-toggle"],
+    example_toggle: bool = _field(False, group=GROUP, flags=["--example-toggle"],
                                    doc="A boolean toggle")
-    exercise_items: list[str] = _field(list, group=GROUP, flags=["--exercise-items"],
-                                       doc="Repeatable list flag, e.g. --exercise-items a --exercise-items b")
+    example_items: list[str] = _field(list, group=GROUP, flags=["--example-items"],
+                                       doc="Repeatable list flag, e.g. --example-items a --example-items b")
 
     def __post_init__(self):
         # ── Injected utilities ──────────────────────────────────────────
@@ -54,11 +54,11 @@ class ExerciseMixin:
         # self.printstatus   → print cyan to stderr
         # self.warning(msg)  → print yellow to stderr
         # self.c             → colour constants (c.CYN, c.GRN, c.YLW, c.BLU, c.RED, c.RST)
-        self.logger.info(f"ExerciseMixin initialising: flag={self.exercise_flag}, "
-                         f"count={self.exercise_count}, toggle={self.exercise_toggle}")
+        self.logger.info(f"ExampleMixin initialising: flag={self.example_flag}, "
+                         f"count={self.example_count}, toggle={self.example_toggle}")
 
-        if self.exercise_count < 0:
-            self.printerr("exercise-count must be non-negative")
+        if self.example_count < 0:
+            self.printerr("[example] example-count must be non-negative")
             import sys
             sys.exit(1)
 
@@ -73,10 +73,11 @@ class ExerciseMixin:
         self._seen_requests = []
 
         if self.hostname:
-            self.printstatus(f"ExerciseMixin bound to hostname: {self.hostname}")
+            self.printstatus("[example] bound to hostname: {self.hostname}")
 
         # ── Chain ────────────────────────────────────────────────────────
         # MUST call super().__post_init__() so the next MRO entry runs.
+        # This only applies to mixins.
         super().__post_init__()
 
 
@@ -84,17 +85,24 @@ class ExerciseMixin:
 # A Processor handles incoming HTTP requests. Dispatch is by method name:
 #   do_GET(req)   — handles GET requests
 #   do_POST(req)  — handles POST requests
-#   do_*/do_ANY   — handles ANY method
+#   do_*/do_XYZ   — handles XYZ method
 #   handle_fallback(req)  — called when no do_METHOD matches
 #   get_services(server)  — returns [(path, description)] for the index page
 #
-# Each handler returns True if the request was fully handled, None otherwise.
-# Processors are tried in order; the first one that returns True wins.
+# Each handler returns True if the request was fully handled (i.e. HTTP response returned), None otherwise.
+# Processors are tried in order, as the extensions appear on the command line.
 
-class ExerciseProcessor:
+@dataclass
+class ExampleProcessor:
+    # Command-line arguments can appear in the processor as well!
+    example_arg_from_processor: str = _field("wassup", group=GROUP, doc="Example of an argument in the processor")
+
+    def __post_init__(self):
+        self.printstatus(f"processor arg: {self.example_arg_from_processor}")
+
     def get_services(self, server):
         return [
-            (server.exercise_flag or "/exercise", "exercise extension demo"),
+            (server.example_flag or "/example", "example extension demo"),
         ]
 
     # ── GET ──────────────────────────────────────────────────────────────
@@ -104,18 +112,18 @@ class ExerciseProcessor:
     #   req.send_error(code, message=None, explain=None)
 
     def do_GET(self, req):
-        if req.path == "/exercise/responses":
+        if req.path == "/example/responses":
             return self._demo_responses(req)
-        if req.path == "/exercise/state":
+        if req.path == "/example/state":
             return self._demo_state(req)
-        if req.path.startswith("/exercise/"):
-            return self._handle_exercise(req)
+        if req.path.startswith("/example/"):
+            return self._handle_example(req)
         # Return None → let the next processor try
 
     def _demo_responses(self, req):
         # send_response_full with custom content, mime, extra headers
-        req.send_response_full(200, content=b"<h1>Exercise</h1>", mime="text/html",
-                               headers={"X-Exercise": "true"})
+        req.send_response_full(200, content=b"<h1>Example</h1>", mime="text/html",
+                               headers={"X-Example": "true"})
         return True
 
     def _demo_state(self, req):
@@ -125,9 +133,9 @@ class ExerciseProcessor:
             "client": req.client_address[0],
             "host": req.server.host,
             "port": req.server.port,
-            "exercise_flag": req.server.exercise_flag,
-            "exercise_count": req.server.exercise_count,
-            "exercise_toggle": req.server.exercise_toggle,
+            "example_flag": req.server.example_flag,
+            "example_count": req.server.example_count,
+            "example_toggle": req.server.example_toggle,
             "seen": len(req.server._seen_requests),
             "supports_https": req.server.supports_https,
             "has_filter": req.server.filter_regex is not None,
@@ -135,7 +143,7 @@ class ExerciseProcessor:
         })
         return True
 
-    def _handle_exercise(self, req):
+    def _handle_example(self, req):
         # ── Mark IP ──────────────────────────────────────────────────────
         # req.mark_ip_bad(weight) / req.mark_ip_ok()
         # These interact with the server's BadnessRateLimiter.
@@ -152,28 +160,28 @@ class ExerciseProcessor:
         # The LoggingEventHandler will silently discard unknown fields;
         # register a custom Handler to consume them.
         req.push_event(
-            exercise_event=True,
-            exercise_path=req.path,
-            exercise_body=req.body,
+            example_event=True,
+            example_path=req.path,
+            example_body=req.body,
         )
 
         req.send_response_full(200, content=json.dumps({
             "seen": len(req.server._seen_requests),
-            "flag": req.server.exercise_flag,
-            "count": req.server.exercise_count,
+            "flag": req.server.example_flag,
+            "count": req.server.example_count,
         }).encode(), mime="application/json")
         return True
 
     # ── POST ─────────────────────────────────────────────────────────────
 
     def do_POST(self, req):
-        if req.path == "/exercise/echo":
+        if req.path == "/example/echo":
             # req.body contains the raw POST body (bytes)
             req.send_response_full(200, content=req.body, mime="application/octet-stream",
                                    headers={"X-Body-Length": str(len(req.body))})
             return True
 
-        if req.path == "/exercise/submit":
+        if req.path == "/example/submit":
             try:
                 data = json.loads(req.body)
             except (json.JSONDecodeError, UnicodeDecodeError):
@@ -198,8 +206,12 @@ class ExerciseProcessor:
 # Handlers receive ALL events (both built-in and custom).
 # Multiple handlers can be registered; each one's handle_event() is called.
 
-class ExerciseHandler:
-    def __init__(self):
+@dataclass
+class ExampleHandler:
+    example_arg_from_handler: str = _field("ketchup", group=GROUP, doc="Example of an argument in the handler")
+
+    def __post_init__(self):
+        self.printstatus(f"handler arg: {self.example_arg_from_handler}")
         self.events = []
 
     def get_events(self, event_type=None):
@@ -216,9 +228,9 @@ class ExerciseHandler:
         # proto, event_timestamp, client.
         self.events.append(data)
 
-        # Only print for our custom exercise events
-        if data.get("exercise_event"):
+        # Only print for our custom example events
+        if data.get("example_event"):
             self.printstatus(
-                f"ExerciseHandler got event: {data.get('exercise_path')} "
+                f"[example] ExampleHandler got event: {data.get('example_path')} "
                 f"from {data.get('client')} [{data.get('proto')}]"
             )

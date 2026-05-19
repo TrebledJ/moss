@@ -143,7 +143,7 @@ class WebSocketMixin:
             self._tester_html = None
         super().__post_init__()
         if self.websocket_tester:
-            self.printstatus(f"WebSocket tester: http://127.0.0.1:{self.port}{self.websocket_tester}")
+            self.printstatus(f"[websocket] WebSocket tester: http://127.0.0.1:{self.port}{self.websocket_tester}")
 
 
 class WebSocketProcessor:
