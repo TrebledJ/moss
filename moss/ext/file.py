@@ -61,7 +61,7 @@ class FileServerMixin:
     directory: str = _field("[[memory]]", group=GROUP, flags=["--file-directory", "-d"], doc="The local directory to serve files from, or [[memory]] for in-memory mode")
     upload_url_path: str = _field("/upload", group=GROUP, doc="HTTP path which accepts upload payloads")
     upload_dir: str = _field(None, group=GROUP, flags=["--upload-dir", "-ud"], doc="Directory to store uploaded files (default: same as --file-directory)")
-    max_size: int = _field(10485760, group=GROUP, flags=["--max-size"], doc="Max upload file size in bytes")
+    max_size: int = _field(10 * 1024 * 1024, group=GROUP, flags=["--max-size"], doc="Max upload file size in bytes")
 
     files: dict = _field(dict, cli=False)
     _memory_mode: bool = _field(False, cli=False)
@@ -108,6 +108,7 @@ class FileServerMixin:
             sys.exit(1)
 
         super().__post_init__()
+        self._upload_form_html = _build_upload_form_html(self.fileserver_url_path)
 
     def serve_file(self, filename, content, mime_type=None):
         if isinstance(content, str):
@@ -215,7 +216,7 @@ class FileServerProcessor:
 
     def do_GET(self, req):
         if req.path == req.server.upload_url_path:
-            req.send_response_full(200, content=UPLOAD_FORM_HTML, mime="text/html")
+            req.send_response_full(200, content=req.server._upload_form_html, mime="text/html")
             return True
 
         file_data = req.server.get_file(req.path)
@@ -290,6 +291,7 @@ class FileServerProcessor:
         r.append('<style type="text/css">\n:root {\ncolor-scheme: light dark;\n}\n</style>')
         r.append(f'<title>{title}</title>\n</head>')
         r.append(f'<body>\n<h1>{title}</h1>')
+        r.append(f'<p><a href="{html.escape(req.server.upload_url_path, quote=False)}">Upload files</a></p>')
         r.append('<hr>\n<ul>')
         for name, is_dir, is_symlink in entries:
             displayname = linkname = name
@@ -325,7 +327,9 @@ def sanitise_filename(s: bytes | str) -> str:
     s = bytes([(c if c in WHITELIST else DEFAULT_CHAR) for c in s])
     return s.decode()
 
-UPLOAD_FORM_HTML = """
+def _build_upload_form_html(fileserver_url: str) -> bytes:
+    escaped_url = html.escape(fileserver_url, quote=False)
+    return f"""
 <!DOCTYPE html>
 <html>
 <head>
@@ -335,6 +339,7 @@ UPLOAD_FORM_HTML = """
 </head>
 <body>
 <h1>File Upload</h1>
+<p><a href="{escaped_url}">Browse files</a></p>
 <form action="" method="POST" enctype="multipart/form-data">
 <input id="fileInput" name="files" type="file" multiple />
 <br />
@@ -345,7 +350,7 @@ UPLOAD_FORM_HTML = """
 <p id="status"></p>
 </body>
 <script>
-document.getElementsByTagName('form')[0].addEventListener('submit', async (e) => {
+document.getElementsByTagName('form')[0].addEventListener('submit', async (e) => {{
   e.preventDefault();
   const fileInput = document.getElementById('fileInput');
   const file = fileInput.files[0];
@@ -353,24 +358,24 @@ document.getElementsByTagName('form')[0].addEventListener('submit', async (e) =>
 
   xhr.timeout = 3600000
 
-  xhr.onreadystatechange = () => {
-    if (xhr.readyState === XMLHttpRequest.DONE) {
-      let message = `${xhr.status}: ${xhr.statusText}`
+  xhr.onreadystatechange = () => {{
+    if (xhr.readyState === XMLHttpRequest.DONE) {{
+      let message = `${{xhr.status}}: ${{xhr.statusText}}`
       if (xhr.status === 0) message = 'Connection failed'
-      if (xhr.status === 204) {
-        message = `Success: ${xhr.statusText}`
-      }
+      if (xhr.status === 204) {{
+        message = `Success: ${{xhr.statusText}}`
+      }}
       document.getElementById('status').textContent = message
-    }
-  }
+    }}
+  }}
 
-  xhr.upload.onprogress = e => {
+  xhr.upload.onprogress = e => {{
     document.getElementById('status').textContent = (e.loaded === e.total ?
-      'Saving\xe2\x80\xa6' :
-      `${Math.floor(100*e.loaded/e.total)}% ` +
-      `[${Math.floor(e.loaded/1024)} / ${Math.floor(e.total/1024)}KiB]`
+      'Saving...' :
+      `${{Math.floor(100*e.loaded/e.total)}}% ` +
+      `[${{Math.floor(e.loaded/1024)}} / ${{Math.floor(e.total/1024)}}KiB]`
     )
-  }
+  }}
 
   xhr.open(e.target.method, e.target.action, true);
   xhr.setRequestHeader("Content-Type", file.type || "application/octet-stream");
@@ -378,9 +383,9 @@ document.getElementsByTagName('form')[0].addEventListener('submit', async (e) =>
 
   xhr.send(file);
 
-  document.getElementById('task').textContent = `Uploading ${file.name}:`
+  document.getElementById('task').textContent = `Uploading ${{file.name}}:`
   document.getElementById('status').textContent = '0%'
-});
+}});
 </script>
 </html>
 """.strip().encode()
