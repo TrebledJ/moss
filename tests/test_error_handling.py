@@ -4,6 +4,9 @@ import time
 import queue
 from contextlib import contextmanager
 
+MIN_ACCEPTABLE_FIRST_BYTE_TIMEOUT = 5.0
+MAX_ACCEPTABLE_FIRST_BYTE_TIMEOUT = 10.0
+
 @contextmanager
 def socket_connection(host: str = "127.0.0.1", port: int = 8000, timeout: float = 15.0):
     """Context manager for a raw socket – auto-closes"""
@@ -255,19 +258,20 @@ class TestTimeoutHandling:
             pytest.fail("No anomaly detected for line timeout")
 
 
+@pytest.mark.no_tcp_check
 class TestIdle:
     def test_idle_connection_regression_is_open(cls, moss_port):
         """Server should remain open when the connection was recently opened"""
         with socket_connection(port=moss_port) as sock:
             # send nothing
-            closed = wait_until_closed(sock, max_wait=max(2, 5.0 - 1))
+            closed = wait_until_closed(sock, max_wait=max(2, MIN_ACCEPTABLE_FIRST_BYTE_TIMEOUT - 1))
             assert not closed, "Server unexpected closed shortly after connection was initiated"
 
     def test_idle_connection_is_closed(cls, moss_port):
         """Server should eventually close idle connections (no bytes sent)"""
         with socket_connection(port=moss_port) as sock:
             # send nothing
-            closed = wait_until_closed(sock, max_wait=10.0 + 2)
+            closed = wait_until_closed(sock, max_wait=MAX_ACCEPTABLE_FIRST_BYTE_TIMEOUT + 2)
             assert closed, "Server did not close truly idle connection in reasonable time"
 
     def test_anomaly_portscan(cls, moss_runner, moss_port):

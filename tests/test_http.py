@@ -14,7 +14,7 @@ class TestDefault:
         assert r.status_code != 0
 
 
-@pytest.mark.moss_args("--status-code", 404, "--body", TEST_BODY)
+@pytest.mark.moss_args("--status-code", 404, "--body", TEST_BODY, "-vv")
 class TestHttpResponse:
     def test_basic_get(cls, http_client):
         r = http_client.get("/")
@@ -28,9 +28,36 @@ class TestHttpResponse:
         r = http_client.get("/api/submit")
         assert r.text == TEST_BODY
 
+    def test_post_under_rfile_buffer_size(cls, http_client):
+        r = http_client.post("/api/data", content="a"*7000)
+        assert r.text == TEST_BODY
+
+    def test_post_with_rfile_buffer_size(cls, http_client):
+        r = http_client.post("/api/data", content="a"*8192)
+        assert r.text == TEST_BODY
+
+    def test_post_much_over_rfile_buffer_size(cls, http_client):
+        r = http_client.post("/api/data", content="a"*8192*2)
+        assert r.text == TEST_BODY
+
+    def test_post_much_over_rfile_buffer_size2(cls, http_client):
+        r = http_client.post("/api/data", content="a"*8192*3)
+        assert r.text == TEST_BODY
+
+    def test_post_with_rfile_buffer_size_py314(cls, http_client):
+        r = http_client.post("/api/data", content="a"*131072)
+        assert r.text == TEST_BODY
+
+    def test_post_over_rfile_buffer_size_py314(cls, http_client):
+        r = http_client.post("/api/data", content="a"*int(131072*1.5))
+        assert r.text == TEST_BODY
+
+    def test_post_over_rfile_buffer_size_py314_2(cls, http_client):
+        r = http_client.post("/api/data", content="a"*131072*2)
+        assert r.text == TEST_BODY
+
 
 @pytest.mark.moss_args("--status-code", 404, "--body", TEST_BODY)
-# @pytest.mark.override_moss_port(8000)
 class TestHttp1Connection:
     def test_connection_keep_alive(cls, http_client):
         r = http_client.get("/")
@@ -101,7 +128,7 @@ class TestRequestLine:
 
 from moss.moss import MAX_BODY_SIZE
 
-@pytest.mark.moss_args("--status-code", 200)
+@pytest.mark.moss_args("--status-code", 200, "--optimise-mode", "performance")
 @pytest.mark.slow
 class TestRequestTooLarge:
     def test_body_sanity_smol(cls, http_client):
@@ -111,17 +138,41 @@ class TestRequestTooLarge:
 
     def test_body_sanity(cls, http_client):
         payload = (MAX_BODY_SIZE - 1) * "a"
-        r = http_client.post("/", content=payload)
+        r = http_client.post("/", content=payload, timeout=30)
         assert r.status_code == 200
 
     def test_long_body_status(cls, http_client):
         payload = (MAX_BODY_SIZE + 1) * "a"
-        r = http_client.post("/", content=payload)
+        r = http_client.post("/", content=payload, timeout=30)
         assert r.status_code == 413
 
     def test_long_body_anomaly(cls, http_client, moss_runner):
         payload = (MAX_BODY_SIZE + 1) * "a"
+        r = http_client.post("/", content=payload, timeout=30)
+        srv = moss_runner.servers[0]
+        expect_anomaly(srv, "Content Too Large")
+
+@pytest.mark.moss_args("--status-code", 200, "--optimise-mode", "security")
+@pytest.mark.slow
+class TestRequestTooLarge:
+    def test_body_sanity_smol(cls, http_client):
+        payload = 10 * "a"
         r = http_client.post("/", content=payload)
+        assert r.status_code == 200
+
+    def test_body_sanity(cls, http_client):
+        payload = (MAX_BODY_SIZE - 1) * "a"
+        r = http_client.post("/", content=payload, timeout=30)
+        assert r.status_code == 200
+
+    def test_long_body_status(cls, http_client):
+        payload = (MAX_BODY_SIZE + 1) * "a"
+        r = http_client.post("/", content=payload, timeout=30)
+        assert r.status_code == 413
+
+    def test_long_body_anomaly(cls, http_client, moss_runner):
+        payload = (MAX_BODY_SIZE + 1) * "a"
+        r = http_client.post("/", content=payload, timeout=30)
         srv = moss_runner.servers[0]
         expect_anomaly(srv, "Content Too Large")
 

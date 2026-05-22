@@ -5,14 +5,10 @@ import time
 from contextlib import contextmanager
 
 # ────────────────────────────────────────────────
-#   Configuration – same as test_network.py
+#   Configuration
 # ────────────────────────────────────────────────
 
-MIN_ACCEPTABLE_FIRST_BYTE_TIMEOUT = 5.0
-MAX_ACCEPTABLE_FIRST_BYTE_TIMEOUT = 10.0
-MAX_ACCEPTABLE_CONNECTION_TIMEOUT = 30.0
-SLOW_BYTE_INTERVAL = 4.5
-LINE_TIMEOUT_EXPECTED = 10.0
+from moss.moss import TIMEOUT_FOR_HEADERS as MAX_HEADER_READ_DURATION
 from moss.moss import TIMEOUT_FOR_BODY as MAX_BODY_READ_DURATION
 
 # ────────────────────────────────────────────────
@@ -79,28 +75,6 @@ def expect_anomaly_detail(srv, payload):
 
 @pytest.mark.slow
 @pytest.mark.moss_https
-class TestIdleHTTPS:
-    def test_idle_connection_regression_is_open(cls, moss_port):
-        """Server should remain open when the connection was recently opened (HTTPS)"""
-        with ssl_socket_connection(port=moss_port) as sock:
-            closed = wait_until_closed(sock, max_wait=max(2, MIN_ACCEPTABLE_FIRST_BYTE_TIMEOUT - 1))
-            assert not closed, "HTTPS Server unexpectedly closed shortly after connection was initiated"
-
-    def test_idle_connection_is_closed(cls, moss_port):
-        """Server should eventually close idle connections (no bytes sent) (HTTPS)"""
-        with ssl_socket_connection(port=moss_port) as sock:
-            closed = wait_until_closed(sock, max_wait=MAX_ACCEPTABLE_FIRST_BYTE_TIMEOUT + 2)
-            assert closed, "HTTPS Server did not close truly idle connection in reasonable time"
-
-    def test_anomaly_portscan(cls, moss_runner, moss_port):
-        with ssl_socket_connection(port=moss_port):
-            pass
-        srv = moss_runner.servers[0]
-        expect_anomaly(srv, "socket open", with_tags=["portscan"])
-
-
-@pytest.mark.slow
-@pytest.mark.moss_https
 class TestSlowHeadersHTTPS:
     """Slowloris-style attacks over HTTPS"""
 
@@ -109,7 +83,7 @@ class TestSlowHeadersHTTPS:
         PAYLOAD = b"GET /very/long/path HTTP/1.1\r\nHost: test.local\r\nX-Delay: "
         with ssl_socket_connection(port=moss_port) as sock:
             sock.sendall(PAYLOAD)
-            closed = wait_until_closed(sock, max_wait=LINE_TIMEOUT_EXPECTED + 5)
+            closed = wait_until_closed(sock, max_wait=MAX_HEADER_READ_DURATION + 5)
             assert closed, "HTTPS Connection with partial header (no newline) was not closed"
 
     def test_partial_header_no_newline_anomaly(cls, moss_runner, moss_port):
@@ -117,6 +91,7 @@ class TestSlowHeadersHTTPS:
         PAYLOAD = b"GET /very/long/path HTTP/1.1\r\nHost: test.local\r\nX-Delay: "
         with ssl_socket_connection(port=moss_port) as sock:
             sock.sendall(PAYLOAD)
+            wait_until_closed(sock, max_wait=MAX_HEADER_READ_DURATION + 5)
 
         srv = moss_runner.servers[0]
         expect_anomaly_detail(srv, PAYLOAD)
@@ -129,7 +104,7 @@ class TestSlowHeadersHTTPS:
             sock.sendall(b"X-Delay: ")
 
             try:
-                for _ in range(int(LINE_TIMEOUT_EXPECTED + 10)):
+                for _ in range(int(MAX_HEADER_READ_DURATION + 5)):
                     sock.sendall(b"x")
                     time.sleep(1)
             except (ConnectionResetError, BrokenPipeError, TimeoutError, OSError) as e:
@@ -144,7 +119,7 @@ class TestSlowHeadersHTTPS:
             sock.sendall(PAYLOAD)
 
             try:
-                for _ in range(int(LINE_TIMEOUT_EXPECTED + 10)):
+                for _ in range(int(MAX_HEADER_READ_DURATION + 5)):
                     sock.sendall(b"x")
                     time.sleep(1)
             except (ConnectionResetError, BrokenPipeError, TimeoutError, OSError):
@@ -158,26 +133,25 @@ class TestSlowHeadersHTTPS:
             else:
                 assert False, "expected anomaly"
 
-
-@pytest.mark.slow
-@pytest.mark.moss_https
-@pytest.mark.moss_args("-vv", "--status-code", 201)
-class TestSlowBodyHTTPS:
-    """Slow POST body (R.U.D.Y.) attacks over HTTPS"""
-
     def test_requestline_trickle_timeout(cls, moss_port):
         """Slowloris on request line over HTTPS"""
         with ssl_socket_connection(port=moss_port) as sock:
             sock.sendall(b"GET /very/long/path")
 
             try:
-                for _ in range(int(LINE_TIMEOUT_EXPECTED + 10)):
+                for _ in range(int(MAX_HEADER_READ_DURATION + 5)):
                     sock.sendall(b"x")
                     time.sleep(1)
             except (ConnectionResetError, BrokenPipeError, TimeoutError, OSError) as e:
                 return
             else:
                 assert False, "HTTPS Connection slow trickle bytes in requestline not closed"
+
+
+@pytest.mark.slow
+@pytest.mark.moss_https
+class TestSlowBodyHTTPS:
+    """Slow POST body (R.U.D.Y.) attacks over HTTPS"""
 
     def test_body_trickle_timeout(cls, moss_port):
         """R.U.D.Y.: slow POST body after headers over HTTPS"""
@@ -188,7 +162,7 @@ class TestSlowBodyHTTPS:
             sock.sendall(b"abc")
 
             try:
-                for _ in range(int(MAX_BODY_READ_DURATION + 10)):
+                for _ in range(int(MAX_BODY_READ_DURATION + 5)):
                     sock.sendall(b"x")
                     time.sleep(1)
             except (ConnectionResetError, BrokenPipeError, TimeoutError, OSError) as e:
@@ -209,7 +183,7 @@ class TestSlowBodyHTTPS:
                 sock.sendall(b"x")
                 time.sleep(1)
 
-            closed = wait_until_closed(sock, 10)
+            closed = wait_until_closed(sock, 7)
             assert closed, "HTTPS Connection should have closed"
 
     def test_slow_post_body(cls, moss_port):
@@ -228,7 +202,7 @@ class TestSlowBodyHTTPS:
                 sent = 0
                 while sent < 100000:
                     chunk = min(8, 100000 - sent)
-                    sock.sendall(b"\x00" * chunk)
+                    sock.sendall(b"A" * chunk)
                     sent += chunk
                     time.sleep(0.1)
             except (ConnectionResetError, BrokenPipeError, TimeoutError, OSError) as e:

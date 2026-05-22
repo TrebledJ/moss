@@ -55,10 +55,15 @@ WEBDAV_COMMANDS = [
 # The number of seconds to wait on the initial socket before timing out.
 SOCKET_TIMEOUT = 30
 
-TIMEOUT_FOR_FIRST_BYTE = 8 # Timeout for the first byte
-TIMEOUT_FOR_NEWLINE = 5    # Timeout when reading a line (prevent slowloris)
-TIMEOUT_FOR_BODY = 10      # Timeout for the request body
-# TIMEOUT_FOR_REQUEST = 30   # Timeout for the entire request
+TIMEOUT_FOR_FIRST_BYTE = 5 # Timeout for the first byte
+TIMEOUT_FOR_HEADERS = 5    # Timeout for the entire header portion.
+TIMEOUT_FOR_BODY = 20      # Timeout for the entire request body.
+
+# Timeout for Python's socket API.
+# How long the socket can wait for data before quitting.
+# Note: This does not protect against trickling (RUDY) attacks, but is useful when the connection stalls.
+# https://docs.python.org/3/library/socket.html#socket.socket.settimeout
+TIMEOUT_FOR_READY_READ = 5
 
 # Controls the size of the queue used to pass messages from RequestHandlers to the main server thread.
 QUEUE_MAX_SIZE = 40
@@ -66,7 +71,7 @@ QUEUE_MAX_SIZE = 40
 # Controls the maximum length of the first line of a HTTP request.
 MAX_REQUESTLINE_LENGTH = 8192
 
-# 100MB
+# The maximum size of a HTTP request body.
 MAX_BODY_SIZE = 100 * 1024 * 1024
 
 # List of static file extensions, which influence whether a file may be gzipped if enabled
@@ -76,6 +81,16 @@ STATIC_FILE_EXTENSIONS = {
     'application/javascript', 'application/xml',
     'application/json',
 }
+
+# Note [read buffers]
+# The internal buffer size of Python socket's makefile() file object.
+# Prior to Python 3.14, this defaults to 8KiB. In Python 3.14, this is 128KiB.
+# Here, we specify a higher number on the magnitude of MiBs. The reason for choosing
+# such is so that rfile.read1() can be more performant.
+# The downside is that each RequestHandler would have this buffer pre-allocated.
+# But depending on the operating system, this pre-allocation may be lazy,
+# meaning no physical memory is actually used.
+RBUFSIZE_FOR_READ_BUFFER_SECURITY_MODE = 10 * 1024 * 1024
 
 MIN_GZIP_LENGTH = 4000
 MIN_MINIFY_JS_LENGTH = 8000
@@ -142,27 +157,30 @@ class TimeoutBufferedReader:
     - total inactivity timeout during body reading
     - Uses our own buffer so readline and read stay consistent
     """
-    def __init__(self, rfile, connection, timeout=15.0, line_timeout=TIMEOUT_FOR_NEWLINE, read_timeout=TIMEOUT_FOR_BODY, default_size=4096*1024):
+    def __init__(self, rfile, connection, default_size=1024*1024, default_timeout=15, mode=None):
         self.rfile = rfile                  # original io.BufferedReader
-        # self.sock_fileno = rfile.fileno()
         self.connection = connection
-        self.timeout = timeout              # max seconds between any two successful reads
-        self.line_timeout = line_timeout
-        self.read_timeout = read_timeout
         self._buffer = bytearray()          # our single source-of-truth buffer
-        self._pastreadbuffer = bytearray()
-        self._last_read_time = time.monotonic()
+        self._history = bytearray()
         self.default_size = default_size
+        self.default_timeout = default_timeout
+        self._deadline = None
         self.is_ssl = isinstance(connection, ssl.SSLSocket)
+        self.mode = mode if mode in {'security', 'performance'} else 'performance'
+
         # Only set non-blocking for non-SSL sockets; select() doesn't work well with SSL
-        if not self.is_ssl:
-            self.connection.setblocking(0) # set non-blocking to use with select
+        # if not self.is_ssl:
+        #     self.connection.setblocking(0) # set non-blocking to use with select
+    
+    def set_countdown(self, seconds):
+        """Reset the current countdown timer to the given number of seconds."""
+        self._deadline = time.time() + seconds
     
     def new_request(self):
-        self._pastreadbuffer = bytearray()
+        self._history = bytearray()
 
     def is_buffer_empty(self):
-        return len(self._pastreadbuffer) == 0 and len(self._buffer) == 0
+        return len(self._history) == 0 and len(self._buffer) == 0
 
     def drain(self):
         """Return all currently buffered bytes without blocking.
@@ -173,153 +191,108 @@ class TimeoutBufferedReader:
         self._buffer.clear()
         return result
 
-    def _wait_for_data(self, remaining_timeout):
-        """Block via select until data or timeout"""
-        # if remaining_timeout <= 0:
-        #     raise TimeoutError("Read timeout (no activity)")
+    def anomalise(self):
+        """Return all bytes in the current 'session'."""
+        try:
+            peeky = self.rfile.peek(1)
+        except OSError, TimeoutError:
+            # socket timed out, skip reading the fileobj buffer. 
+            peeky = b""
+        return bytes(self._history + self._buffer) + peeky
 
-        # bl = self.connection.getblocking()
-        # self.connection.setblocking(0) # set non-blocking to use with select
-        rlist, _, _ = select.select([self.connection], [], [], remaining_timeout)
-        # self.connection.setblocking(bl)
+    def guard(self):
+        if self._deadline is None:
+            time_left = self._default_timeout
+        else:
+            time_left = self._deadline - time.time()
+            if time_left <= 0:
+                raise TimeoutError("read timeout (no activity)")
+        logger.debug(f'guard: now={time.time():.1f}, ddl={self._deadline or -1.0:.1f}, eta {time_left:.1f}')
+        
+        # First, check the rfile buffer.
+        if len(self.rfile.peek(1)) != 0:
+            return True
+        
+        # If not, use select() to wait for OS-level ready-read.
+        rlist, _, _ = select.select([self.connection], [], [], time_left)
         if not rlist:
-            raise TimeoutError("Read timeout (no activity)")
+            raise TimeoutError("read timeout (no activity from select)")
+        
         return True
 
-    def _read_chunk(self, size=-1):
-        """Internal: read up to size bytes from underlying socket/file"""
-        now = time.monotonic()
-        remaining = self.timeout - (now - self._last_read_time)
-
-        # if remaining <= 0:
-        #     raise TimeoutError("Inactivity timeout")
-
-        self._wait_for_data(remaining)
-
-        # Now safe to read (data pending)
-        # For SSL sockets, use direct recv() with retry on SSLWantReadError
-        if self.is_ssl:
-            try:
-                chunk = self.connection.recv(size if size > 0 else self.default_size)
-            except ssl.SSLWantReadError:
-                # SSL needs more data, wait and retry
-                self._wait_for_data(self.timeout)
-                try:
-                    chunk = self.connection.recv(size if size > 0 else self.default_size)
-                except ssl.SSLWantReadError:
-                    # Still no data, return empty (will trigger EOF handling)
-                    chunk = b''
+    def _read_chunk(self, size=-1) -> bytes:
+        """Internal: read up to size bytes from underlying socket/file. Caller is responsible to push to _buffer."""
+        logger.debug(f"_read_chunk: {size} bytes")
+        self.guard()
+        size = size if size > 0 else self.default_size
+        logger.debug(f"_read_chunk: rfile.read(), size={size}")
+        
+        if self.mode == 'security':
+            # Note [read buffers]
+            # Use read1() to read whatever's available, so that it doesn't wait for `size`` bytes.
+            # Important for passing HTTPS trickling-byte (RUDY) DOS tests.
+            # N.B. This may read less than `size` bytes, if `size` happens to be REALLY BIG.
+            # To mitigate this, we set RBUFSIZE to a big number, like 5MiB.
+            chunk = self.rfile.read1(size)
         else:
-            chunk = self.rfile.read(size if size > 0 else self.default_size)
-        if chunk:
-            logger.debug(f"read {len(chunk)} bytes: {chunk[:100]}")
-            self._last_read_time = time.monotonic()
+            # This blocks until `size` bytes are read or the connection is closed, whichever happens sooner.
+            # This does mean that the thread potentially hangs (see trickling DoS tests).
+            chunk = self.rfile.read(size)
+            # It may be possible to have the best of both worlds by having a watchdog
+            # thread call socket.shutdown() at the appropriate moment...
+
         return chunk
 
-    def readline(self, limit=-1):
-        start = time.monotonic()
+    def readline(self, limit=-1) -> bytes:
         while True:
             nl_pos = min(self._buffer.find(b'\n'), limit)
             # Return if a newline was found, or if the limit is exceeded
             if nl_pos != -1 or (nl_pos := len(self._buffer)) >= limit:
                 line = bytes(self._buffer[:nl_pos + 1])
-                self._pastreadbuffer += self._buffer[:nl_pos + 1]
+                self._history += self._buffer[:nl_pos + 1]
                 del self._buffer[:nl_pos + 1]
                 return line
 
-            # Use longer timeout if buffer is empty (waiting for new request on keep-alive)
-            # Use shorter timeout if we have partial data (prevent slowloris)
-            current_timeout = self.timeout if len(self._buffer) == 0 else self.line_timeout
-            elapsed = time.monotonic() - start
-            if elapsed >= current_timeout:
-                raise TimeoutError("Line read timeout")
+            if not self._buffer and (p := self.rfile.peek(1)):
+                self._buffer.extend(self._read_chunk(len(p)))
+                continue
 
             chunk = self._read_chunk(self.default_size if limit < 0 else limit - len(self._buffer))
-
-            # elapsed = time.monotonic() - start
-            # if elapsed < self.line_timeout:
-            #     continue
-            
             if not chunk:
                 # EOF before newline → return partial or empty
                 line = bytes(self._buffer)
                 self._buffer.clear()
-                self._pastreadbuffer += self._buffer
+                self._history += self._buffer
                 return line
             
             self._buffer.extend(chunk)
 
-    def read(self, size=-1):
+    def read(self, size=-1) -> bytes:
         if size == 0:
             return b''
         
-        start = time.monotonic()
         if size < 0:  # read all
             result = bytes(self._buffer)
-            self._pastreadbuffer += self._buffer
             self._buffer.clear()
-            while True:
-                elapsed = time.monotonic() - start
-                logger.info(f"read: elapsed={elapsed:.2f}, size={len(result)}")
-                if elapsed >= self.read_timeout:
-                    raise TimeoutError("read timeout")
-
-                chunk = self._read_chunk(self.default_size)
-                if not chunk:
-                    break
+            while chunk := self._read_chunk(self.default_size):
                 result += chunk
-                self._pastreadbuffer += chunk
+            self._history.extend(result)
             return result
 
         # fixed size
-        result = bytearray()
-        while len(result) < size:
-            elapsed = time.monotonic() - start
-            logger.info(f"read: elapsed={elapsed:.2f}, size={len(result)}/{size}")
-            if elapsed >= self.read_timeout:
-                raise TimeoutError("read timeout")
-            
-            if self._buffer:
-                take = min(size - len(result), len(self._buffer))
-                result.extend(self._buffer[:take])
-                self._pastreadbuffer += self._buffer[:take]
-                del self._buffer[:take]
-                continue
-
-            chunk = self._read_chunk(min(self.default_size, size - len(result)))
-            if not chunk:
-                break
-            self._pastreadbuffer += chunk
-            result.extend(chunk)
-
-        return bytes(result)
-
-    def drop(self, size):
-        start = time.monotonic()
-        # Consume any data already in our internal buffer
+        result = bytes()
         if self._buffer:
-            take = min(size, len(self._buffer))
-            self._pastreadbuffer += self._buffer[:take]
+            take = min(size - len(result), len(self._buffer))
+            result += bytes(self._buffer[:take])
+            self._history += self._buffer[:take]
             del self._buffer[:take]
-            size -= take
-        # Read remaining bytes from underlying socket with timeout
-        # Use longer timeout since client may be slowly sending data
-        if size > 0:
-            remaining = size
-            while remaining > 0:
-                elapsed = time.monotonic() - start
-                if elapsed >= self.read_timeout:
-                    raise TimeoutError("drop timeout")
-                chunk_size = min(remaining, self.default_size)
-                # Wait for data to be available (with timeout)
-                try:
-                    self._wait_for_data(self.read_timeout - elapsed)
-                    chunk = self.rfile.read(chunk_size)
-                except (BlockingIOError, TimeoutError, OSError):
-                    chunk = None
-                if not chunk:
-                    break
-                remaining -= len(chunk)
+        
+        heuristic_size = max(size // 10, self.default_size) # Aim for at most 10 _read_chunks.
+        while len(result) < size and (chunk := self._read_chunk(min(heuristic_size, size - len(result)))):
+            logger.debug(f"read: current={len(result)} bytes, target={size} bytes")
+            result += chunk
+        self._history.extend(result)
+        return result
 
     def readinto(self, b):
         # Used by some higher-level code (e.g. http.client for chunked)
@@ -339,7 +312,6 @@ class MossRequestHandler(BaseHTTPRequestHandler):
         self.client_address = client_address
         self.server = server
         self.is_ssl = False
-        self.is_ws = False
         self.proto = 'TCP'
 
         self.init_success = False
@@ -429,12 +401,15 @@ class MossRequestHandler(BaseHTTPRequestHandler):
                 self.handle_anomaly(f'expected HTTPS only, but got something else', details=bytes_)
                 return
 
-        self.init_success = True
+        self.init_success = True # This is a signal used by MOSS server.
+        self.timeout = TIMEOUT_FOR_READY_READ # This is internally used by RequestHandler to call connection.settimeout().
+        if server.optimise_read_buffer_for == 'security':
+            self.rbufsize = RBUFSIZE_FOR_READ_BUFFER_SECURITY_MODE
         super().__init__(request, client_address, server)
 
     def setup(self):
         super().setup()
-        self.rfile = TimeoutBufferedReader(self.rfile, self.request, 5)
+        self.rfile = TimeoutBufferedReader(self.rfile, self.request, mode=self.server.optimise_read_buffer_for)
 
     def wait_for_first_byte(self, timeout):
         # We need select here to set timeouts. Without this, connection timeout is 
@@ -613,11 +588,12 @@ class MossRequestHandler(BaseHTTPRequestHandler):
         """
         self.debug('handle one request')
         self.rfile.new_request()
+        self.rfile.set_countdown(TIMEOUT_FOR_HEADERS)
         self.request_timestamp = self.log_date_time_string()
         try:
             self.raw_requestline = self.rfile.readline(MAX_REQUESTLINE_LENGTH + 1)
 
-            self.debug(f'read {len(self.raw_requestline)} bytes')
+            self.debug(f'requestline: read {len(self.raw_requestline)} bytes')
             if len(self.raw_requestline) > MAX_REQUESTLINE_LENGTH:
                 self.requestline = ''
                 self.request_version = ''
@@ -631,6 +607,7 @@ class MossRequestHandler(BaseHTTPRequestHandler):
                 # An error code has been sent, just exit
                 self.close_connection = True
                 return
+            self.rfile.set_countdown(TIMEOUT_FOR_BODY)
             try:
                 content_length = int(self.headers.get('Content-Length', 0))
                 if content_length <= 0: raise ValueError(f"expected positive content length")
@@ -644,7 +621,7 @@ class MossRequestHandler(BaseHTTPRequestHandler):
             self.handle_method(self.command)
         except RequestTooLarge:
             # Read and discard the body so client can finish sending
-            self.rfile.drop(content_length)
+            self.rfile.read(content_length)
             self.send_error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
             self.close_connection = True
         except TimeoutError as e:
@@ -652,12 +629,13 @@ class MossRequestHandler(BaseHTTPRequestHandler):
             # If this is a keep-alive connection waiting for next request, it's normal (client closed/idle).
             # Only log as anomaly if we actually read some data (partial request)
             self.debug(f"Request timed out: {e}")
-            if self.rfile.is_buffer_empty():
+            details = self.rfile.anomalise()
+            if details:
+                # Partial data was read - this is anomalous
+                self.handle_anomaly(f"request timed out", details=details)
+            else:
                 # No data was read - client just went idle or closed connection gracefully
                 self.debug("Keep-alive connection timed out (no data)")
-            else:
-                # Partial data was read - this is anomalous
-                self.handle_anomaly(f"request timed out", details=bytes(self.rfile._pastreadbuffer + self.rfile._buffer))
             self.close_connection = True
             return
         finally:
@@ -720,7 +698,7 @@ class MossRequestHandler(BaseHTTPRequestHandler):
                     raise ValueError("unreasonable length http version")
                 version_number = int(version_number[0]), int(version_number[1])
             except (ValueError, IndexError):
-                self.handle_anomaly(anomaly=f"non-http request", details=self.raw_requestline + self.rfile._buffer)
+                self.handle_anomaly(anomaly=f"non-http request", details=self.rfile.anomalise())
                 # self.send_error(
                 #     HTTPStatus.BAD_REQUEST,
                 #     "Bad request version (%r)" % version)
@@ -735,7 +713,7 @@ class MossRequestHandler(BaseHTTPRequestHandler):
             self.request_version = version
 
         if len(words) != 3:
-            self.handle_anomaly(f"non-http request", details=self.raw_requestline + bytes(self.rfile._buffer))
+            self.handle_anomaly(f"non-http request", details=self.rfile.anomalise())
             return False
         
         self.command, self.path = words[:2]
@@ -913,6 +891,7 @@ class HttpMossServer(ThreadingHTTPServer):
     correlation_regex: str = _field('', group="matching", flags=["--correlation", "-r"], doc="Extract correlation ID based on regex, this works independently of the filter")
 
     enable_blocking: bool = _field(False, group="security", flags=["--block-scanners"], doc="Enables automatic blocking of IPs which behave like scanners. To unblock, restart the server lol")
+    optimise_read_buffer_for: str = _field("security", flags=["--optimise-mode"], choices=["performance", "security"], group="security", doc="By default ('performance' option), calling .read() on a Python socket file object will block until ALL bytes are read. This exposes the server to potential RUDY attacks, which keeps connections open by trickling one byte at a time. Using the 'security' option mitigates this, but with lower performance (either from a larger memory footprint or from a longer time parsing requests). See Note [read buffers].")
 
     def __post_init__(self):
         self._validate()
@@ -958,7 +937,6 @@ class HttpMossServer(ThreadingHTTPServer):
             if not self.certfile or not self.keyfile:
                 printe(f"{CLR_RED}HTTPS enabled, but certfile or keyfile was not provided{CLR_RST}")
                 sys.exit(1)
-
             if not os.path.exists(self.certfile):
                 printe(f"{CLR_RED}certfile does not exist:{CLR_RST}: {self.certfile}")
                 sys.exit(1)

@@ -8,12 +8,7 @@ from contextlib import contextmanager
 #   Configuration – adjust according to your mitigations
 # ────────────────────────────────────────
 
-MIN_ACCEPTABLE_FIRST_BYTE_TIMEOUT = 5.0
-MAX_ACCEPTABLE_FIRST_BYTE_TIMEOUT = 10.0       # seconds – how long we allow the server to tolerate bad clients
-MAX_ACCEPTABLE_CONNECTION_TIMEOUT = 30.0       # seconds – the maximum duration the connection should last
-SLOW_BYTE_INTERVAL = 4.5          # seconds between bytes
-LINE_TIMEOUT_EXPECTED = 10.0      # how long to allow tolerate bad lines
-# MAX_BODY_READ_DURATION = 5.0      # how long to allow tolerate bad lines
+from moss.moss import TIMEOUT_FOR_HEADERS as MAX_HEADER_READ_DURATION
 from moss.moss import TIMEOUT_FOR_BODY as MAX_BODY_READ_DURATION
 
 # ────────────────────────────────────────
@@ -76,7 +71,7 @@ def expect_anomaly_detail(srv, payload):
 # ────────────────────────────────────────
 
 @pytest.mark.slow
-@pytest.mark.moss_args("-vv", "--status-code", 201)
+@pytest.mark.moss_args("--status-code", 201)
 class TestDOS:
     def test_partial_header_sanity_check(cls, moss_port):
         """Server should stay open for a little bit even when new line hasn't arrived"""
@@ -92,7 +87,7 @@ class TestDOS:
         PAYLOAD = b"GET /very/long/path HTTP/1.1\r\nHost: test.local\r\nX-Delay: "
         with socket_connection(port=moss_port) as sock:
             sock.sendall(PAYLOAD)
-            closed = wait_until_closed(sock, LINE_TIMEOUT_EXPECTED + 5)
+            closed = wait_until_closed(sock, MAX_HEADER_READ_DURATION + 5)
             assert closed, "Connection with partial header (no newline) was not closed"
         
     def test_partial_header_no_newline_anomaly(cls, moss_runner, moss_port):
@@ -112,9 +107,8 @@ class TestDOS:
             sock.sendall(b"X-Delay: ")
             
             # Trickle a few more bytes very slowly
-            
             try:
-                for _ in range(int(LINE_TIMEOUT_EXPECTED + 10)):
+                for _ in range(int(MAX_HEADER_READ_DURATION + 5)):
                     sock.sendall(b"x")
                     time.sleep(1)
             except (ConnectionResetError, BrokenPipeError, TimeoutError, OSError) as e:
@@ -130,7 +124,7 @@ class TestDOS:
             
             # Trickle a few more bytes very slowly
             try:
-                for _ in range(int(LINE_TIMEOUT_EXPECTED + 10)):
+                for _ in range(int(MAX_HEADER_READ_DURATION + 5)):
                     sock.sendall(b"x")
                     time.sleep(1)
             except (ConnectionResetError, BrokenPipeError, TimeoutError, OSError) as e:
@@ -154,7 +148,7 @@ class TestDOS:
             
             # Trickle a few more bytes very slowly
             try:
-                for _ in range(int(LINE_TIMEOUT_EXPECTED + 10)):
+                for _ in range(int(MAX_HEADER_READ_DURATION + 5)):
                     sock.sendall(b"x")
                     time.sleep(1)
             except (ConnectionResetError, BrokenPipeError, TimeoutError, OSError) as e:
@@ -210,7 +204,6 @@ class TestDOS:
             )
             sock.sendall(headers)
 
-            
             try:
                 # Now trickle body very slowly
                 sent = 0
@@ -218,7 +211,7 @@ class TestDOS:
                     chunk = min(8, 100000 - sent)
                     sock.sendall(b"\x00" * chunk)
                     sent += chunk
-                    time.sleep(0.1)  # tune to be just below your body timeout
+                    time.sleep(0.1)
             except (ConnectionResetError, BrokenPipeError, TimeoutError, OSError) as e:
                 # Ok, expected close
                 pass
