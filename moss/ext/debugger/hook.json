@@ -1,0 +1,29 @@
+{
+  "name": "hook",
+  "commands": {
+    "fetch": {
+      "code": "(function() { if (typeof window._oldfetch === 'undefined') { window._oldfetch = window.fetch; }; window._tmpfetchlog = ''; window.fetch = async (...args) => { let [resource, config] = args; try { window._tmpfetchlog += `\nfetching: ${resource} / config=${JSON.stringify(config)}`; } catch (e) { window._tmpfetchlog += `\nerror: ${e}`; } return window._oldfetch(resource, config); }; return 'fetch hooked'; })()",
+      "description": "Hook fetch"
+    },
+    "fetch_log": {
+      "code": "(function() { if (typeof window._tmpfetchlog_history === 'undefined') { window._tmpfetchlog_history = []; } const tmp = window._tmpfetchlog; window._tmpfetchlog_history.push(tmp); window._tmpfetchlog = ''; return tmp; })()",
+      "description": "Read fetch log"
+    },
+    "fetch_restore": {
+      "code": "(function() { window.fetch = window._oldfetch; return 'fetch restored'; })()",
+      "description": "Restore original XHR"
+    },
+    "xhr": {
+      "code": "(function() { if (typeof window._oldxhropen === 'undefined') { window._oldxhropen = XMLHttpRequest.prototype.open; }window._tmpxhrlog = ''; XMLHttpRequest.prototype.open = function(method, url) { window._tmpxhrlog += `\nxhr: ${method} ${url}`; window._oldxhropen.apply(this, arguments); }; return 'xhr hooked'; })()",
+      "description": "Hook XHR"
+    },
+    "xhr_log": {
+      "code": "(function() { if (typeof window._tmpxhrlog_history === 'undefined') { window._tmpxhrlog_history = []; } const tmp = window._tmpxhrlog; window._tmpxhrlog_history.push(tmp); window._tmpxhrlog = ''; return tmp; })()",
+      "description": "Read XHR log"
+    },
+    "xhr_restore": {
+      "code": "(function() { XMLHttpRequest.prototype.open = function(method, url) { window._oldxhropen.apply(this, arguments); }; return 'xhr restored'; })()",
+      "description": "Restore original XHR"
+    }
+  }
+}

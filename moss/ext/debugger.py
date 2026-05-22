@@ -30,6 +30,7 @@ CLI flags:
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit, parse_qs
 import threading
+import shlex
 import time
 from datetime import datetime
 import json
@@ -82,6 +83,23 @@ BROWSER_JS = """(function(){
 
   var nm = generateId();
 
+  function _sendResult(id, result, error) {
+    var payload = {id: id, name: nm};
+    if (error !== undefined && error !== null) {
+      payload.error = String(error);
+    } else {
+      payload.result = result !== undefined ? String(result) : 'undefined';
+    }
+    lastId = id;
+    if (keyB64) {
+      _encryptPayload(payload).then(function(encrypted) {
+        fetch(base + '{DEBUGGER_PATH}/result', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({encrypted: encrypted}), credentials: 'omit'}).catch(function(){});
+      });
+    } else {
+      fetch(base + '{DEBUGGER_PATH}/result', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload), credentials: 'omit'}).catch(function(){});
+    }
+  }
+
   function schedule() {
     var baseDelay = sleepy * 1000;
     var range = baseDelay * jitter / 100;
@@ -104,17 +122,14 @@ BROWSER_JS = """(function(){
           if (parts[2] && Number(parts[2])) jitter = Number(parts[2]);
           continue;
         }
-        var result, error;
         try {
-          var fn = new Function('return ' + m.code);
-          result = fn();
-          result = result === void 0 ? 'undefined' : String(result);
-        } catch (e) { error = String(e); }
-        var payload = {id: m.id, name: nm};
-        if (error) { payload.error = error; } else { payload.result = result; }
-        var body = keyB64 ? {encrypted: await _encryptPayload(payload)} : payload;
-        try { await fetch(base + '{DEBUGGER_PATH}/result', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body), credentials: 'omit'}); } catch(e) {}
-        lastId = m.id;
+          var result = eval(m.code);
+          if (result !== undefined) {
+            _sendResult(m.id, result, null);
+          }
+        } catch (e) {
+          _sendResult(m.id, null, e);
+        }
       }
     } catch(e) {}
     polling = 0;
@@ -243,6 +258,54 @@ def _xor_decrypt(key: bytes, encoded: str) -> dict:
 
 
 # ────────────────────────────────────────────────
+#   JSON Schema for script files
+# ────────────────────────────────────────────────
+
+JSON_SCHEMA = {
+  "type": "object",
+  "required": ["commands"],
+  "additionalProperties": False,
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "Script name for namespacing commands (defaults to filename stem)"
+    },
+    "commands": {
+      "type": "object",
+      "description": "Map of command names to definitions",
+      "patternProperties": {
+        "^[a-zA-Z_][a-zA-Z0-9_-]*$": { "$ref": "#/definitions/command" }
+      },
+      "additionalProperties": False,
+      "minProperties": 1
+    }
+  },
+  "definitions": {
+    "command": {
+      "type": "object",
+      "required": ["code"],
+      "additionalProperties": False,
+      "properties": {
+        "code": {
+          "type": "string",
+          "description": "JavaScript code. Use {0}, {1}, etc. for positional arguments"
+        },
+        "description": {
+          "type": "string",
+          "description": "Human-readable description of the command"
+        },
+        "args": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 0,
+          "description": "Number of positional arguments expected"
+        }
+      }
+    }
+  }
+}
+
+# ────────────────────────────────────────────────
 #   Mixin — CLI flags, shared state, input thread
 # ────────────────────────────────────────────────
 
@@ -263,6 +326,7 @@ class DebuggerMixin:
     def __post_init__(self):
         self._pending = []
         self._connections = {}
+        self._script_commands = {}
         self._lock = threading.Lock()
         self._next_id = int(time.time() * 1000)
         self._cmd_history = {}
@@ -331,6 +395,58 @@ class DebuggerMixin:
 
         self.status(f"[debugger] Debugger: {proto}://{hostname or '127.0.0.1'}:{self.port}{self.debugger_path}")
 
+    def _load_script_file(self, path: str) -> int:
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except FileNotFoundError:
+            self.warning(f"[debugger] Script file not found: {path}")
+            return 0
+        except json.JSONDecodeError as e:
+            self.warning(f"[debugger] Invalid JSON in script file {path}: {e}")
+            return 0
+
+        try:
+            import jsonschema
+        except ImportError:
+            self.warning(f"[debugger] jsonschema package not available — skipping schema validation for {path}")
+            self.warning(f"[debugger] ")
+            self.warning(f"[debugger] \tpip install jsonschema")
+            self.warning(f"[debugger] ")
+            return 0
+
+        try:
+            jsonschema.validate(data, JSON_SCHEMA)
+        except jsonschema.ValidationError as e:
+            self.warning(f"[debugger] Script file {path} failed schema validation: {e.message}")
+            return 0
+
+        script_name = data.get("name") or os.path.splitext(os.path.basename(path))[0]
+        commands = data.get("commands", {})
+        loaded = 0
+        for cmd_name, cmd_def in commands.items():
+            key = f"{script_name}.{cmd_name}"
+            self._script_commands[key] = {
+                "code": cmd_def["code"],
+                "description": cmd_def.get("description", ""),
+                "args": cmd_def.get("args", 0),
+            }
+            loaded += 1
+        print(f"  Loaded {loaded} command(s) from '{script_name}' ({path})")
+        return loaded
+
+    def _resolve_script_path(self, path: str):
+        if os.path.isabs(path):
+            if os.path.isfile(path):
+                return path
+            return None
+        debugger_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "debugger")
+        for base in (debugger_dir, os.getcwd()):
+            full = os.path.join(base, path)
+            if os.path.isfile(full):
+                return full
+        return None
+
     def _print_result(self, r):
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         name = r.get("name", "???")
@@ -338,7 +454,7 @@ class DebuggerMixin:
         success = not r.get("error")
         glyph = "\u2713" if success else "\u2717"
         detail = r.get("result", "undefined") if success else r["error"]
-        cmd = self._cmd_history[cid]
+        cmd = self._cmd_history.get(cid, "")
         label = f" ({cmd})" if cmd else ""
         msg = f" {glyph} [{ts}]{label} ({name}) {detail}"
         if HAS_PT:
@@ -373,6 +489,7 @@ class DebuggerMixin:
                 code = code.strip()
                 if not code:
                     continue
+                _cmd_label = None
                 if code.startswith("/"):
                     parts = code.split(maxsplit=1)
                     cmd = parts[0].lower()
@@ -384,6 +501,8 @@ class DebuggerMixin:
                         print("  /target            broadcast to all browsers (default)")
                         print("  /broadcast <cmd>   send command to all browsers regardless of target")
                         print("  /clear             clear all pending commands")
+                        print("  /run [script[.cmd] [args...]]   list or execute script commands")
+                        print("  /load <path>       load a .json script file")
                         continue
                     elif cmd == "/conns":
                         if not self._connections:
@@ -412,6 +531,60 @@ class DebuggerMixin:
                             self._pending.clear()
                         print("  Pending commands cleared")
                         continue
+                    elif cmd == "/run":
+                        run_parts = shlex.split(arg) if arg else []
+                        if not run_parts:
+                            scripts = set()
+                            for key in self._script_commands:
+                                name = key.split(".", 1)[0]
+                                scripts.add(name)
+                            if not scripts:
+                                print("  (no script commands loaded)")
+                            else:
+                                for script in sorted(scripts):
+                                    cmds = [k.split(".", 1)[1] for k in sorted(self._script_commands) if k.startswith(f"{script}.")]
+                                    print(f"  {script}: {', '.join(cmds)}")
+                            continue
+                        key = run_parts[0]
+                        cmd_args = run_parts[1:]
+                        if "." in key:
+                            if key not in self._script_commands:
+                                print(f"  Unknown command: {key}")
+                                continue
+                            cmd_def = self._script_commands[key]
+                            expected = cmd_def["args"]
+                            if len(cmd_args) != expected:
+                                print(f"  Error: '{key}' expects {expected} arg(s), got {len(cmd_args)}")
+                                continue
+                            code = cmd_def["code"]
+                            for i, a in enumerate(cmd_args):
+                                code = code.replace(f"{{{i}}}", a)
+                            print(f"  Queued: {key}")
+                            _cmd_label = key + (" " + " ".join(cmd_args) if cmd_args else "")
+                        else:
+                            script_name = key
+                            cmds = [k for k in sorted(self._script_commands) if k.startswith(f"{script_name}.")]
+                            if not cmds:
+                                print(f"  Unknown script: {script_name}")
+                                continue
+                            print(f"  Script: {script_name}")
+                            for k in cmds:
+                                d = self._script_commands[k]
+                                desc = d.get("description", "")
+                                args = d.get("args", 0)
+                                label = f" ({desc})" if desc else ""
+                                print(f"    {k}  {label}  args={args}")
+                            continue
+                    elif cmd == "/load":
+                        if not arg:
+                            print("  Usage: /load <path>")
+                            continue
+                        resolved = self._resolve_script_path(arg)
+                        if resolved is None:
+                            print(f"  Script not found: {arg}")
+                            continue
+                        self._load_script_file(resolved)
+                        continue
                     else:
                         print(f"  Unknown command: {cmd}. Try /help")
                         continue
@@ -425,7 +598,7 @@ class DebuggerMixin:
                     command["target"] = target
                 with self._lock:
                     self._pending.append(command)
-                    self._cmd_history[cmd_id] = code
+                    self._cmd_history[cmd_id] = _cmd_label or code
 
         if session:
             def _wrapped():
