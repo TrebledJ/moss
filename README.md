@@ -173,7 +173,7 @@ usage: moss
        [--mime-type DEFAULT_MIME_TYPE] [--body DEFAULT_BODY]        
        [--index] [--filter FILTER_REGEX]
        [--correlation CORRELATION_REGEX] [--output-all]
-       [--ignore-common-headers] [--jsonl JSONL_FILE]
+       [--show-common-headers] [--jsonl JSONL_FILE]
        [--no-anomaly] [--no-log] [--simple] [--https]
        [--https-only] [--certfile CERTFILE] [--keyfile KEYFILE]     
        [--block-scanners] [--token-auth TOKEN_AUTH]
@@ -257,9 +257,9 @@ logging:
   --output-all          Output all HTTP requests, including those   
                         that don't match the filter (default:       
                         False)
-  --ignore-common-headers, -i
-                        Exclude common request headers from
-                        display. This does not affect jsonl output  
+  --show-common-headers Show common request headers (Accept, Cache-Control,
+                        etc.) in display. By default these are
+                        hidden. This does not affect jsonl output
                         (default: False)
   --jsonl, -o JSONL_FILE
                         Output file path for JSONL logging (one     
@@ -416,8 +416,7 @@ The `ext/` folder contains several extensions which double as examples to get yo
 
 - `ext/debugger.py` - Interactive JS debugging agent. Serves an eval-able JS payload that browses to, polls for pending commands, and POSTs results back. Randomised path support via `{RANDOM}` placeholder. CORS-enabled.
 - `ext/file.py` - Combined file server and upload server with in-memory and on-disk
-    storage. Supports file serving, uploads, and directory listing. Replaces the
-    former sfile.py and upload.py extensions.
+    storage. Supports file serving, uploads, and directory listing.
 - `ext/notify.py` - Third-party webhook notifications, allowing basic filtering by event type. Currently supports Discord.
 - `ext/pastebin.py` - End-to-end-encrypted pastebin service. Supports both browser-side (AES-GCM/AES-CBC via Web Crypto API) and server-side encryption fallback for HTTP access.
 - `ext/stealthnet.py` - Stealthy upload service with a customisable JSON DSL profile. Chunkifies data and smuggles it out via HTTP requests; useful for bypassing DLP restrictions.

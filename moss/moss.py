@@ -25,11 +25,11 @@ from copy import deepcopy
 import gzip
 import math
 
-__version__ = '0.7.2'
+__version__ = '0.8.0'
 
 MAX_LENGTH_TO_LOG = 1024
 
-# These headers will be filtered out when `ignore_common_headers` is specified.
+# These headers will be filtered out by default (hidden).
 COMMON_HEADERS = [
     'accept',
     'accept-encoding',
@@ -1070,7 +1070,7 @@ class LoggingEventHandler:
     Consumes and outputs events to console, file, and notification webhook.
     """
     output_all: bool = _field(False, group="logging", doc="Output all HTTP requests, including those that don't match the filter")
-    ignore_common_headers: bool = _field(False, group="logging", flags=["--ignore-common-headers", "-i"], doc="Exclude common request headers from display. This does not affect jsonl output")
+    show_common_headers: bool = _field(False, group="logging", flags=["--show-common-headers"], doc="Show common request headers (Accept, Cache-Control, etc.) in display. By default these are hidden. This does not affect jsonl output")
     jsonl_file: str = _field(None, group="logging", flags=["--jsonl", "-o"], doc="Output file path for JSONL logging (one JSON event per line). Use `--jsonl -` to output to stdout")
     no_anomaly: bool = _field(False, group="logging", doc="Do not log anomalies")
     no_log: bool = _field(False, group="logging", doc="Do not log anything entirely")
@@ -1120,7 +1120,7 @@ class LoggingEventHandler:
             **kwargs,
         )
 
-        if self.ignore_common_headers:
+        if not self.show_common_headers:
             headers = deepcopy(headers)
             strip_headers_in_place(headers)
         self.log_request_to_display(proto, requestline, headers, body, **kwargs)

@@ -40,7 +40,7 @@
 #--correlation a1b2.*{12}
 #--jsonl out.jsonl
 --output-all
---ignore-common-headers
+# --show-common-headers
 #--no-anomaly
 
 # [protocol]

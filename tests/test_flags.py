@@ -64,19 +64,19 @@ class TestGzip:
             assert r.headers["content-encoding"] == "gzip"
 
 
-@pytest.mark.moss_args("--ignore-common-headers", "-i")
-class TestIgnoreCommonHeaders:
-    def test_common_headers_filtered(self, http_client, moss_runner):
-        """Common headers should be filtered from logging."""
+@pytest.mark.moss_args("--show-common-headers")
+class TestShowCommonHeaders:
+    def test_common_headers_shown(self, http_client, moss_runner):
+        """Common headers should be shown in logging when --show-common-headers is set."""
         r = http_client.get("/", headers={
             "Accept": "text/html",
             "Accept-Encoding": "gzip",
             "Accept-Language": "en-US",
         })
         assert r.status_code != 0
-        # The logging output should not contain the common headers
+        # The logging output should contain the common headers
         # This is hard to test directly, but we can verify the flag is set
-        assert moss_runner.handlers[0].ignore_common_headers == True
+        assert moss_runner.handlers[0].show_common_headers == True
 
 
 @pytest.mark.moss_args("--output-all")
