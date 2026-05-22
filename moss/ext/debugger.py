@@ -31,6 +31,7 @@ from dataclasses import dataclass, field
 from urllib.parse import urlsplit, parse_qs
 import threading
 import time
+from datetime import datetime
 import json
 import random
 import hashlib
@@ -331,14 +332,15 @@ class DebuggerMixin:
         self.status(f"[debugger] Debugger: {proto}://{hostname or '127.0.0.1'}:{self.port}{self.debugger_path}")
 
     def _print_result(self, r):
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         name = r.get("name", "???")
         cid = r["id"]
         success = not r.get("error")
         glyph = "\u2713" if success else "\u2717"
         detail = r.get("result", "undefined") if success else r["error"]
-        cmd = self._cmd_history.pop(cid, "")
+        cmd = self._cmd_history[cid]
         label = f" ({cmd})" if cmd else ""
-        msg = f"  {glyph}{label} ({name})[{cid}] {detail}"
+        msg = f" {glyph} [{ts}]{label} ({name}) {detail}"
         if HAS_PT:
             try:
                 tag = "ansired" if not success else "ansigreen"
