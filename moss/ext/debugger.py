@@ -172,7 +172,7 @@ CRYPTO_JS = """
       var block = _sha256(_concat(msgKey, counter)), chunk = Math.min(32, len - off);
       for (var j = 0; j < chunk; j++) stream[off + j] = block[j];
       off += 32;
-      for (var j = 3; j >= 0; j--) { if (++counter[j] !== 0) break; }
+      for (var j = 3; j >= 0; j--) { if (++counter[j] !== 256) break; }
     }
     return stream;
   }
