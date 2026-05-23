@@ -25,7 +25,7 @@ from copy import deepcopy
 import gzip
 import math
 
-__version__ = '0.8.0'
+__version__ = '0.8.1'
 
 MAX_LENGTH_TO_LOG = 1024
 

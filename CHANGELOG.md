@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.8.1] - 2026-05-23
 
 - **Debugger: `/output <file>` command** — echoes all input/output (results, queued commands, sent messages) to file with `[timestamp]` prefix. `/output` (no arg) shows current file. File is opened and closed per write (no persistent handle)
 - **Debugger: browser polling timestamp** — `lastId` initialised to `Number(new Date)` instead of `-1` to avoid stale command replay on browser reconnect
