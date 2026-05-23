@@ -175,7 +175,7 @@ class WebSocketProcessor:
 
     def _ws_loop(self, req):
         sock = req.connection
-        buffer = getattr(req.rfile, 'drain')()
+        buffer = req.rfile.drain()
 
         while True:
             try:
@@ -242,4 +242,11 @@ class WebSocketProcessor:
                         body=payload,
                         filter_matches=req.is_match(requestline, payload),
                         correlation_id=req.correlation_id,
+                    )
+
+                else:
+                    req.handle_anomaly(
+                        anomaly=f"unknown websocket opcode: 0x{opcode:x}",
+                        details=payload,
+                        tags=["websocket"],
                     )
