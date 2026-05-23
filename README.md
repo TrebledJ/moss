@@ -414,7 +414,7 @@ The `ext/` folder contains several extensions which double as examples to get yo
     
     You can also take advantage of this "ordering" feature to expose unauthenticated features.
 
-- `ext/debugger.py` - Interactive JS debugging agent / browser C2. Serves an eval-able JS payload; browsers poll for pending commands and POST results back. Supports encryption, script command files (`/run`, `/load`), multi-browser targeting, and a TUI. See [docs/ext/DEBUGGER.md](docs/ext/DEBUGGER.md).
+- `ext/debugger.py` - Interactive JS debugging agent / browser C2. Serves an eval-able JS payload; browsers poll for pending commands and POST results back. Supports encryption, script command files (`/run`, `/load`), multi-browser targeting, and a TUI. See [docs/ext/DEBUGGER.md](docs/ext/DEBUGGER.md) and [Motivation](#debugger-vs-beef).
 - `ext/file.py` - Combined file server and upload server with in-memory and on-disk
     storage. Supports file serving, uploads, and directory listing.
 - `ext/notify.py` - Third-party webhook notifications, allowing basic filtering by event type. Currently supports Discord.
@@ -652,52 +652,39 @@ For your custom scripts and automation ventures. See `examples/` for working scr
 
 Async API is in the works.
 
-<!-- ## Motivation
+## Motivation
 
-My first draft was made in the middle of an exam, and I specifically wanted the OAST server to be controllable programmatically. That is, I run the script, and it will handle servers, craft payloads, and extract exfiltrated credentials within a single script. Later on I did a rewrite when I realised I wanted to handle the scale of hundreds of requests.
+### Why MOSS for OAST?
 
-Core functionality such as OAST and logging are kept as a single file so that it is easy to download and copy around without having to wrestle with a package manager.
+**Flexibility.** Interactsh forces correlation IDs into subdomains. MOSS lets you place them anywhere — path, header, body, or query string — via a configurable regex (`--correlation`). You're not locked into a fixed workflow.
 
-### Why not interactsh?
+**No domain required.** Interactsh needs a domain with wildcard DNS. MOSS works with just an IP or any hostname, making it viable for testing where DNS isn't configurable, such as validating an SSRF/RCE in an internal network pentest.
 
-Interactsh allows self-hosting using interactsh-server.
+**Programmatic API.** MOSS exposes a Python API for automation scripts (see [`examples/`](#examples)).
 
-### Why not webhook.site?
+**Extensible.** Add auth, pastebin, file serving, or custom handlers with `-e`.
 
----
+**Socket-level telemetry.** Anomaly detection, port scans, raw TCP logging.
 
-On one hand, you have mature OAST tools such as interactsh, Burp Collaborator, and online webhooks. Unfortunately, due to abuse by black hats, these free services are becoming increasingly signatured by firewalls/DLP/IDS which means it's hard to be confident that a negative is a True Negative.
+See other features outlined in this doc. 
 
-On the other hand, if you want to test quick-n-dirty, you could set up a Python server (`python -m http.server`) or fire up a netcat port to receive HTTP in its raw glory. The problem with these is that it doesn't support HTTPS (encrypted HTTP). Or perhaps you want to test an SSRF within an air-gapped internal network. Online tools will not help here. You need to "self-host" on your machine.
+### MOSS Debugger vs BeEF
 
-### Why not just use interactsh-server?
+The `debugger` extension is a lightweight alternative to [BeEF](https://beefproject.com/) (Browser Exploitation Framework):
 
-Good question! It appears as if this project needlessly contends with an existing mature tool. Part of me is too lazy to setup golang whenever I need to quickly test something.
+- **Quick to setup.** Just need a couple Python files.
+- **Focused.** Remote browser command execution and result polling. No module system, no persistence layer.
+- **Built-in encryption.** XOR+MAC encryption with SHA-256 key derivation. No external crypto library needed.
+- **TUI for control.** Interactive prompt for sending commands, targeting browsers, loading script collections.
 
+If you need advanced browser exploitation (network discovery, persistent hooks, Metasploit integration), BeEF is the right tool. If you need a quick eval-based C2 agent for XSS testing or remote debugging, MOSS's debugger gets you there in seconds.
 
-Now if you want to test quickly without the hassle of spinning up interactsh-server, its dependencies.
+### Trade-offs
 
-I have tried using interactsh-server in the past, but to me it seems very rigid. There is a fixed workflow (which is great in some cases! because you can reason about its behaviour more consistently), but it was not flexible enough for my use case.
+- MOSS does not natively support DNS, SMTP, or LDAP callbacks. interactsh and Burp Collaborator do.
+- MOSS is not a full intercepting proxy — it's focused on OOB detection and extensible automation.
 
-Here's the normal way to use interactsh is:
-- client requests a correlation ID from the server. This ID is unique, but the main point is that the ID is 
-- client fires payload to target containing correlation ID
-- server picks up correlation ID
-- client is notified (e.g. by polling the server)
-
-webhook.site is another contender which is open source and allows self-hosting. This one is more flexible in that the correlation ID is part of the URL path. There are still DNS and email hook options, which is nice to have.
-
-To summarise my inane ramblings, I experienced pain in the following areas.
-1. (interactsh) Correlation IDs are always placed as a subdomain, and the entire workflow is built on that. This is inflexible. Also I am poor and don't want to buy and manage domain. (Certain cloud providers allow you to configure a domain for a VPS, but no subdomains, and I wanted to use that.)
-2. (interactsh) 
-3. (raw netcat / Python http.server) No SSL support. Or need to restart on each new request. No features for filtering.
-
-This does mean this tool comes with a few disadvantages, which should be acknowledged:
-- Lack of direct support for other protocols (SMB/SMTP/LDAP/DNS), although you can certainly listen on those ports to identify connections
-- 
-
-I still use interactsh; it's a great tool boasting many integrations. But tools have a time and place, and it's nice to have a choice. You wouldn't use a hammer to cut an apple.
--->
+I still use interactsh and Burp Collaborator; they're great tools. But tools have a time and place, and it's nice to have a choice. You wouldn't use a hammer to cut an apple.
 
 ## Warnings
 

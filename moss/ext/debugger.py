@@ -3,7 +3,7 @@ ext/debugger.py
 
 Browser-based interactive JS debugging agent / C2 for MOSS.
 
-Serves an eval-able JS payload for browser injection. The agent polls
+Serves a JS payload for browser injection. The agent polls
 for pending commands from a TUI prompt, executes them, and posts results
 back. Supports encryption, collection files, and multi-browser targeting.
 
@@ -48,7 +48,7 @@ def _field(default, group=None, doc="", metadata={}, flags=[], choices=[], **kwa
 CORS = {"Access-Control-Allow-Origin": "*"}
 
 # ────────────────────────────────────────────────
-#   Browser Payload (eval-able JS)
+#   Browser Payload
 # ────────────────────────────────────────────────
 
 BROWSER_JS = """(function(){
