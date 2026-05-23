@@ -269,81 +269,80 @@ class TestStateIsolation:
 
 
 # ──────────────────────────────────────────────────────────
-#   Script command loading
-# ──────────────────────────────────────────────────────────
+#   Collection command loading
 
 @pytest.mark.moss_args("-e", "debugger", "--debugger-no-input", "--debugger-id-length", "0")
-class TestScriptCommands:
-    def _write_script(self, tmp_path, data, name="test_script.json"):
+class TestCollectionCommands:
+    def _write_collection(self, tmp_path, data, name="test_collection.json"):
         path = tmp_path / name
         path.write_text(json.dumps(data))
         return str(path)
 
     def test_load_valid_json(self, moss_url, moss_runner, tmp_path):
         srv = moss_runner.servers[0]
-        srv._script_commands.clear()
-        path = self._write_script(tmp_path, {
+        srv._collection_commands.clear()
+        path = self._write_collection(tmp_path, {
             "name": "demo",
             "commands": {
                 "ping": {"code": "'pong'", "description": "returns pong"}
             }
         })
-        count = srv._load_script_file(path)
+        count = srv._load_collection_file(path)
         assert count == 1
-        assert "demo.ping" in srv._script_commands
-        assert srv._script_commands["demo.ping"]["code"] == "'pong'"
-        assert srv._script_commands["demo.ping"]["description"] == "returns pong"
-        assert srv._script_commands["demo.ping"]["args"] == 0
+        assert "demo.ping" in srv._collection_commands
+        assert srv._collection_commands["demo.ping"]["code"] == "'pong'"
+        assert srv._collection_commands["demo.ping"]["description"] == "returns pong"
+        assert srv._collection_commands["demo.ping"]["args"] == 0
 
     def test_load_name_defaults_to_stem(self, moss_url, moss_runner, tmp_path):
         srv = moss_runner.servers[0]
-        srv._script_commands.clear()
-        path = self._write_script(tmp_path, {
+        srv._collection_commands.clear()
+        path = self._write_collection(tmp_path, {
             "commands": {
                 "cmd1": {"code": "1+1"}
             }
         }, name="my_script.json")
-        count = srv._load_script_file(path)
+        count = srv._load_collection_file(path)
         assert count == 1
-        assert "my_script.cmd1" in srv._script_commands
+        assert "my_script.cmd1" in srv._collection_commands
 
     def test_load_custom_name(self, moss_url, moss_runner, tmp_path):
         srv = moss_runner.servers[0]
-        srv._script_commands.clear()
-        path = self._write_script(tmp_path, {
+        srv._collection_commands.clear()
+        path = self._write_collection(tmp_path, {
             "name": "custom",
             "commands": {
                 "cmd1": {"code": "1+1"}
             }
         })
-        count = srv._load_script_file(path)
+        count = srv._load_collection_file(path)
         assert count == 1
-        assert "custom.cmd1" in srv._script_commands
+        assert "custom.cmd1" in srv._collection_commands
 
     def test_load_args_defaults(self, moss_url, moss_runner, tmp_path):
         srv = moss_runner.servers[0]
-        srv._script_commands.clear()
-        path = self._write_script(tmp_path, {
+        srv._collection_commands.clear()
+        path = self._write_collection(tmp_path, {
             "name": "a",
             "commands": {
                 "zero": {"code": "1"},
                 "two": {"code": "f('{0}', '{1}')", "args": 2}
             }
         })
-        count = srv._load_script_file(path)
+        count = srv._load_collection_file(path)
         assert count == 2
-        assert srv._script_commands["a.zero"]["args"] == 0
-        assert srv._script_commands["a.two"]["args"] == 2
+        assert srv._collection_commands["a.zero"]["args"] == 0
+        assert srv._collection_commands["a.two"]["args"] == 2
 
     def test_load_file_not_found(self, moss_url, moss_runner):
         srv = moss_runner.servers[0]
-        assert srv._load_script_file("nonexistent.json") == 0
+        assert srv._load_collection_file("nonexistent.json") == 0
 
     def test_load_invalid_json(self, moss_url, moss_runner, tmp_path):
         srv = moss_runner.servers[0]
         path = tmp_path / "bad.json"
         path.write_text("{invalid json}")
-        assert srv._load_script_file(str(path)) == 0
+        assert srv._load_collection_file(str(path)) == 0
 
     def test_load_schema_violation(self, moss_url, moss_runner, tmp_path):
         srv = moss_runner.servers[0]
@@ -351,7 +350,7 @@ class TestScriptCommands:
         path.write_text(json.dumps({
             "commands": "not an object"
         }))
-        assert srv._load_script_file(str(path)) == 0
+        assert srv._load_collection_file(str(path)) == 0
 
     def test_load_missing_code(self, moss_url, moss_runner, tmp_path):
         srv = moss_runner.servers[0]
@@ -362,21 +361,21 @@ class TestScriptCommands:
                 "bad": {"description": "no code"}
             }
         }))
-        assert srv._load_script_file(str(path)) == 0
+        assert srv._load_collection_file(str(path)) == 0
 
     def test_load_duplicate_skipped(self, moss_url, moss_runner, tmp_path):
         srv = moss_runner.servers[0]
-        path = self._write_script(tmp_path, {
+        path = self._write_collection(tmp_path, {
             "name": "x",
             "commands": {"ping": {"code": "'pong'"}}
         })
-        srv._load_script_file(path)
-        assert srv._load_script_file(path) == 0
+        srv._load_collection_file(path)
+        assert srv._load_collection_file(path) == 0
 
     def test_load_multiple_commands(self, moss_url, moss_runner, tmp_path):
         srv = moss_runner.servers[0]
-        srv._script_commands.clear()
-        path = self._write_script(tmp_path, {
+        srv._collection_commands.clear()
+        path = self._write_collection(tmp_path, {
             "name": "multi",
             "commands": {
                 "a": {"code": "1"},
@@ -384,25 +383,25 @@ class TestScriptCommands:
                 "c": {"code": "3", "args": 1}
             }
         })
-        count = srv._load_script_file(path)
+        count = srv._load_collection_file(path)
         assert count == 3
-        keys = [k for k in srv._script_commands if k.startswith("multi.")]
+        keys = [k for k in srv._collection_commands if k.startswith("multi.")]
         assert len(keys) == 3
 
     def test_resolve_absolute_path(self, moss_url, moss_runner, tmp_path):
         srv = moss_runner.servers[0]
         script_path = tmp_path / "abs.json"
         script_path.write_text(json.dumps({"commands": {"c": {"code": "1"}}}))
-        resolved = srv._resolve_script_path(str(script_path))
+        resolved = srv._resolve_collection_path(str(script_path))
         assert resolved == str(script_path)
 
     def test_resolve_not_found(self, moss_url, moss_runner):
         srv = moss_runner.servers[0]
-        assert srv._resolve_script_path("does_not_exist_12345.json") is None
+        assert srv._resolve_collection_path("does_not_exist_12345.json") is None
 
     def test_resolve_debugger_dir(self, moss_url, moss_runner):
         srv = moss_runner.servers[0]
-        resolved = srv._resolve_script_path("recon.json")
+        resolved = srv._resolve_collection_path("recon.json")
         assert resolved is not None
         assert resolved.endswith("recon.json")
 
@@ -413,7 +412,7 @@ class TestScriptCommands:
         try:
             with open(fpath, "w") as f:
                 json.dump({"commands": {"c": {"code": "1"}}}, f)
-            resolved = srv._resolve_script_path(fname)
+            resolved = srv._resolve_collection_path(fname)
             assert resolved == fpath
         finally:
             if os.path.isfile(fpath):
@@ -421,16 +420,16 @@ class TestScriptCommands:
 
     def test_script_command_queuing(self, moss_url, moss_runner, tmp_path):
         srv = moss_runner.servers[0]
-        srv._script_commands.clear()
-        path = self._write_script(tmp_path, {
+        srv._collection_commands.clear()
+        path = self._write_collection(tmp_path, {
             "name": "demo",
             "commands": {
                 "ping": {"code": "'pong'"}
             }
         })
-        srv._load_script_file(path)
+        srv._load_collection_file(path)
 
-        cmd_def = srv._script_commands["demo.ping"]
+        cmd_def = srv._collection_commands["demo.ping"]
         cmd_id = srv._next_id
         srv._next_id += 1
         with srv._lock:
@@ -445,16 +444,16 @@ class TestScriptCommands:
 
     def test_script_command_arg_substitution(self, moss_url, moss_runner, tmp_path):
         srv = moss_runner.servers[0]
-        srv._script_commands.clear()
-        path = self._write_script(tmp_path, {
+        srv._collection_commands.clear()
+        path = self._write_collection(tmp_path, {
             "name": "demo",
             "commands": {
                 "fetch": {"code": "fetch('{0}').then(r=>r.text())", "args": 1}
             }
         })
-        srv._load_script_file(path)
+        srv._load_collection_file(path)
 
-        cmd_def = srv._script_commands["demo.fetch"]
+        cmd_def = srv._collection_commands["demo.fetch"]
         code = cmd_def["code"].replace("{0}", "http://example.com")
         expected_code = "fetch('http://example.com').then(r=>r.text())"
         assert code == expected_code

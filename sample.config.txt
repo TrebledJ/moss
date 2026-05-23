@@ -52,5 +52,5 @@
 # [notifications]
 #--notify discord
 #--notify-on match
-#--webhook "https://your-webhook.com"
+#--webhook "https://example.com/webhook"
 #--id "local"

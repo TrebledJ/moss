@@ -4,7 +4,7 @@ StealthNet is a MOSS module for covert uploads and is probably unrelated to what
 
 ## Specification
 
-You can find the JSON schema in [stealthnet.py](../stealthnet.py#L719).
+You can find the JSON schema in [stealthnet.py](../../moss/ext/stealthnet.py#L745).
 
 By default, profiles will be validated against this schema. (You can disable this validation using `--stealth-no-validate`, but I would not recommend doing that.)
 
@@ -18,7 +18,7 @@ By default, profiles will be validated against this schema. (You can disable thi
 
 ## Examples
 
-You can find examples of profiles in the [ext/stealthnet/profiles](profiles) folder.
+You can find examples of profiles in the [ext/stealthnet/profiles](../../moss/ext/stealthnet/profiles) folder.
 
 ## Requests
 
@@ -52,8 +52,8 @@ How do we define the order of sending requests?
 
 There are two ways.
 
-1. `$.cycle` requests will be sent sequentially (in order). After each request, the client will pause sending as specified in `$.cycle[].delay`. This is useful for bursts of data-fetching requests, login sequences, etc.
-2. `$.intermittent` requests will be sent at regular intervals. The interval is defined in `$.intermittent[].every`. This is useful for requests such as keep-alive or telemetry.
+1. `$.cycle` requests will be sent sequentially (in order). After each request, the client will pause with a delay specified in `$.cycle[].delay`. Cycle requests are useful for simulating bursts of data-fetching requests, login sequences, etc.
+2. `$.intermittent` requests will be sent at regular intervals. The interval is defined in `$.intermittent[].every`. This is useful for simulating requests such as keep-alive or telemetry.
 
 ```jsonc
 "cycle": [

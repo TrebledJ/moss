@@ -6,8 +6,8 @@ correlation ID is passed as the urlparams query parameter in the
 OperaServlet URL; the target echoes it back in the callback body.
 
 Usage:
-    python examples/cve_2026_21967.py --hostname your.server.com --target targets.txt
-    python examples/cve_2026_21967.py --hostname your.server.com --target x.com --target y.com
+    python examples/cve_2026_21967.py --hostname example.com --target targets.txt
+    python examples/cve_2026_21967.py --hostname example.com --target x.com --target y.com
 """
 
 import sys

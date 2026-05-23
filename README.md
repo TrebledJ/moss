@@ -414,7 +414,7 @@ The `ext/` folder contains several extensions which double as examples to get yo
     
     You can also take advantage of this "ordering" feature to expose unauthenticated features.
 
-- `ext/debugger.py` - Interactive JS debugging agent. Serves an eval-able JS payload that browses to, polls for pending commands, and POSTs results back. Randomised path support via `{RANDOM}` placeholder. CORS-enabled.
+- `ext/debugger.py` - Interactive JS debugging agent / browser C2. Serves an eval-able JS payload; browsers poll for pending commands and POST results back. Supports encryption, script command files (`/run`, `/load`), multi-browser targeting, and a TUI. See [docs/ext/DEBUGGER.md](docs/ext/DEBUGGER.md).
 - `ext/file.py` - Combined file server and upload server with in-memory and on-disk
     storage. Supports file serving, uploads, and directory listing.
 - `ext/notify.py` - Third-party webhook notifications, allowing basic filtering by event type. Currently supports Discord.
@@ -489,7 +489,7 @@ MOSS pre-packages several profiles, which can be specified via `--stealth-profil
 - `chunk5kbget.json` - sends 5 KB per GET request, minimal delay
 - `chunk100kb.json` - sends 100 KB per POST request, minimal delay
 
-More details can be found in [ext/stealthnet/README.md](ext/stealthnet/README.md).
+More details can be found in [docs/ext/STEALTHNET.md](docs/ext/STEALTHNET.md).
 
 Sample profile:
 
@@ -612,7 +612,7 @@ openssl req -new -x509 -nodes -days 365 -out server.crt -keyout server.key -sha2
 Then run like so:
 
 ```shell
-moss.py --https --certfile /etc/letsencrypt/live/your.domain.com/fullchain.pem --keyfile /etc/letsencrypt/live/your.domain.com/privkey.pem
+moss.py --https --certfile /etc/letsencrypt/live/example.com/fullchain.pem --keyfile /etc/letsencrypt/live/example.com/privkey.pem
 ```
 
 For LetsEncrypt, You may need to play around with permissions to get this to work.
@@ -622,7 +622,7 @@ sudo moss --https --certfile ... --keyfile ...
 
 # or
 
-cp /etc/letsencrypt/live/your.domain.com/{fullchain,privkey}.pem .
+cp /etc/letsencrypt/live/example.com/{fullchain,privkey}.pem .
 sudo chown $USER:$USER {fullchain,privkey}.pem
 moss --https --certfile fullchain.pem --keyfile privkey.pem
 ```
@@ -733,6 +733,7 @@ I still use interactsh; it's a great tool boasting many integrations. But tools 
 - [ ] ui: anchored status bar, displaying stats, e.g. number of filtered requests, number of anomalies
 - [ ] misc: better structured reporting of anomalies and socket-level analysis?
 - [ ] misc: encryption, throttling for debugger c2
-- [ ] stealthnet: more TODOs in [ext/stealthnet/README.md](ext/stealthnet/README.md#roadmap)!
+- [ ] stealthnet: more TODOs in [docs/ext/STEALTHNET.md](docs/ext/STEALTHNET.md#roadmap)!
+- [ ] websocket: defensive programming — push anomaly events for unhandled opcodes, review frame parsing for missing checks
 
 PRs welcome.

