@@ -671,7 +671,6 @@ class RequestCatalogue:
         r = Request(**request)
         if missing_states := REQUIRED_STATE_VARIABLES - set(r.states_needed):
             raise JDSLProfileError(f"in request {r}, missing required states: {missing_states}")
-        # TODO: catch invalid variables
         self.requests.append(r)
 
     def merge_common(self, request):
