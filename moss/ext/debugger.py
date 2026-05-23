@@ -53,7 +53,7 @@ CORS = {"Access-Control-Allow-Origin": "*"}
 
 BROWSER_JS = """(function(){
   var base = '{DEBUGGER_BASE}';
-  var lastId = Number(new Date);
+  var lastId = Math.floor(Number(new Date) / 1000);
   var polling = 0;
   var sleepy = 5;
   var jitter = 10;
@@ -347,16 +347,14 @@ class DebuggerMixin:
 
         super().__post_init__()
 
-        proto = 'https' if self.supports_https else 'http'
-        hostname = self.hostname or ""
-
+        origin = self._get_debugger_origin()
         if not self.hostname:
             self.warning("The debugger extension's browser agent uses --hostname to point to the server.")
             self.warning("Absence of a hostname may lead the agent failing to connect, particularly in no-origin contexts.")
 
             self._browser_js = self._browser_js.replace("{DEBUGGER_BASE}", "")
         else:
-            self._browser_js = self._browser_js.replace("{DEBUGGER_BASE}", f"{proto}://{hostname}:{self.port}")
+            self._browser_js = self._browser_js.replace("{DEBUGGER_BASE}", f"{origin}")
 
         if self._encryption_enabled:
             self._browser_js = self._browser_js.replace(
@@ -381,7 +379,12 @@ class DebuggerMixin:
         if not self.debugger_no_input:
             self._start_input_thread()
 
-        self.status(f"[debugger] Debugger: {proto}://{hostname or '127.0.0.1'}:{self.port}{self.debugger_path}")
+        self.status(f"[debugger] Debugger: {origin}{self.debugger_path}")
+    
+    def _get_debugger_origin(self) -> str:
+        proto = 'https' if self.supports_https else 'http'
+        hostname = self.hostname or "127.0.0.1"
+        return f"{proto}://{hostname}:{self.port}"
 
     def _load_collection_file(self, path: str) -> int:
         try:
@@ -653,6 +656,11 @@ class DebuggerProcessor:
 
         if path == base + "/html":
             content = f"<html><body><script>{req.server._browser_js}</script></body></html>"
+            req.send_response_full(200, content=content, mime="text/html")
+            return True
+        
+        if path == base + "/html2":
+            content = f"<html><body><script>import(\"{req.server._get_debugger_origin().replace("https", "http")}{base}\")</script></body></html>"
             req.send_response_full(200, content=content, mime="text/html")
             return True
 
