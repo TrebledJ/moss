@@ -53,7 +53,7 @@ CORS = {"Access-Control-Allow-Origin": "*"}
 
 BROWSER_JS = """(function(){
   var base = '{DEBUGGER_BASE}';
-  var lastId = -1;
+  var lastId = Number(new Date);
   var polling = 0;
   var sleepy = 5;
   var jitter = 10;
@@ -320,6 +320,7 @@ class DebuggerMixin:
         self._consumed = set()
         self._shutdown = False
         self._last_browser_poll = 0.0
+        self._output_file = None
         self._browser_js = BROWSER_JS
 
         if self.debugger_random_id_length > 0:
@@ -453,10 +454,17 @@ class DebuggerMixin:
             try:
                 tag = "ansired" if not success else "ansigreen"
                 print_formatted_text(HTML(f"<{tag}>{msg}</{tag}>"))
-                return
             except Exception:
-                pass
-        print(msg)
+                print(msg)
+        else:
+            print(msg)
+        self._log_output(f"Result: {msg.strip()}")
+
+    def _log_output(self, msg):
+        if self._output_file:
+            ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            with open(self._output_file, "a", encoding="utf-8") as f:
+                print(f"[{ts}] {msg}", file=f, flush=True)
 
     def _start_input_thread(self):
         session = PromptSession() if HAS_PT else None
@@ -493,6 +501,7 @@ class DebuggerMixin:
                         print("  /target            broadcast to all browsers (default)")
                         print("  /broadcast <cmd>   send command to all browsers regardless of target")
                         print("  /clear             clear all pending commands")
+                        print("  /output <file>     echo all input/output to a file")
                         print("  /run [collection[.cmd] [args...]]   list or execute collection commands")
                         print("  /load <path>       load a .json collection file")
                         continue
@@ -567,6 +576,11 @@ class DebuggerMixin:
                                 label = f" ({desc})" if desc else ""
                                 print(f"    {k}  {label}  args={args}")
                             continue
+                    elif cmd == "/output":
+                        self._output_file = arg
+                        self._log_output(f"--- logging started ---")
+                        print(f"  Logging to: {arg}")
+                        continue
                     elif cmd == "/load":
                         if not arg:
                             print("  Usage: /load <path>")
@@ -600,6 +614,9 @@ class DebuggerMixin:
         else:
             t = threading.Thread(target=_input_loop, daemon=True)
         t.start()
+
+def _to_consumed_key(id, client):
+    return f"{id}_{client}"
 
 # ────────────────────────────────────────────────
 #   Processor — HTTP handlers
@@ -657,10 +674,19 @@ class DebuggerProcessor:
                 req.server._connections[conn_name] = req.server._last_browser_poll = time.time()
                 pending = []
                 for c in req.server._pending:
-                    if c["id"] > last_id and c["id"] not in req.server._consumed:
+                    if c["id"] > last_id and _to_consumed_key(c["id"], conn_name) not in req.server._consumed:
                         c_target = c.get("target")
                         if c_target is None or c_target == conn_name or c_target == name:
                             pending.append({"id": c["id"], "code": c["code"]})
+                if pending:
+                    for c in pending:
+                        # Mark the item as consumed by a connection so that it isn't resent.
+                        req.server._consumed.add(_to_consumed_key(c["id"], conn_name))
+                        # Output.
+                        label = req.server._cmd_history[c["id"]]
+                        msg = f"Sent: \"{label}\" → {conn_name}"
+                        print("  " + msg)
+                        req.server._log_output(msg)
             if req.server._encryption_enabled:
                 body = json.dumps({"encrypted": _xor_encrypt(req.server._aes_key, pending)}).encode()
             else:
@@ -694,9 +720,8 @@ class DebuggerProcessor:
                 req.send_response_full(400, headers=CORS)
                 return True
             req.server._print_result(data)
-            with req.server._lock:
-                req.server._consumed.add(data["id"])
-                req.server._pending = [c for c in req.server._pending if c["id"] != data["id"]]
+            # with req.server._lock:
+            #     req.server._pending = [c for c in req.server._pending if c["id"] != data["id"]]
             req.send_response_full(200, content=b'{"ok":true}', mime="application/json", headers=CORS)
             return True
 
