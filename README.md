@@ -78,7 +78,7 @@ This installs MOSS as a Python package, and also conveniently supplies it as a c
 To install a specific version:
 
 ```shell
-pip install git+https://github.com/TrebledJ/moss@v0.8.1
+pip install git+https://github.com/TrebledJ/moss@v0.8.2
 ```
 
 ### OAST with Opinionated Defaults
@@ -210,7 +210,7 @@ usage: moss.py [-h] [--ext EXT [EXT ...]] [--version] [-v] [--bind HOST]
                [--notify-on {match,correlation,anomaly,all}]
                [--webhook-url WEBHOOK_URL] [--id IDENTIFIER]
 
-Simple, modular offensive HTTP server by TrebledJ, v0.8.1
+Simple, modular offensive HTTP server by TrebledJ, v0.8.2
 
 options:
   -h, --help            show this help message and exit
