@@ -71,21 +71,21 @@ class StealthyUploadMixin:
         if not self.stealth_no_validate:
             try:
                 import jsonschema
+                try:
+                    jsonschema.validate(profile, JSON_SCHEMA)
+                except jsonschema.ValidationError as e:
+                    self.error(f"[stealthnet] JSON Schema ValidationError: {e.message}")
+                    self.error(f"[stealthnet] Path to error: {e.json_path}")
+                    sys.exit(1)
             except ImportError:
-                self.error(f"[stealthnet] stealthnet requires the jsonschema package:")
-                self.error(f"[stealthnet] ")
-                self.error(f"[stealthnet] \tpip install jsonschema")
-                self.error(f"[stealthnet] ")
-                self.error(f"[stealthnet] If you're not aiming to customise the stealth profile,")
-                self.error(f"[stealthnet] you can skip validation by passing --stealth-no-validate")
-                sys.exit(1)
-            try:
-                jsonschema.validate(profile, JSON_SCHEMA)
-            except jsonschema.ValidationError as e:
-                self.error(f"[stealthnet] JSON Schema ValidationError: {e.message}")
-                self.error(f"[stealthnet] Path to error: {e.json_path}")
-                sys.exit(1)
-
+                self.warning(f"[stealthnet] stealthnet optionally depends on the jsonschema package:")
+                self.warning(f"[stealthnet] ")
+                self.warning(f"[stealthnet] \tpip install jsonschema")
+                self.warning(f"[stealthnet] ")
+                self.warning(f"[stealthnet] This is an OPTIONAL dependency which validates JSON schemas,")
+                self.warning(f"[stealthnet] primarily for those seeking to customise stealthnet profiles.")
+                self.warning(f"[stealthnet] If you aren't writing profiles, use --stealth-no-validate to skip validation.")
+                
         try:
             self.stealth_catalogue = make_catalogue_from_profile(profile)
             self.stealth_decryptor = make_decryptor_from_profile(profile)
