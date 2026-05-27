@@ -21,7 +21,7 @@ import sys
 import socket
 import traceback
 import random
-import urllib3
+import urllib.request
 import json
 
 GROUP = "notifications (ext/notify.py)"
@@ -65,8 +65,6 @@ class NotificationEventHandler:
             if not self.webhook_url:
                 self.error("[notify] --webhook-url was not provided")
                 sys.exit(1)
-
-            self.http = urllib3.PoolManager()
 
         if self.notify_platform:
             self.status(f"[notify] Notifications: {self.notify_platform} (id: {self.identifier})")
@@ -113,11 +111,19 @@ class NotificationEventHandler:
                 msg += f"```"
             data = {"content": msg}
             try:
-                resp = self.http.request("POST", self.webhook_url, body=json.dumps(data),
-                                            headers={
-                                                "Content-Type": "application/json"
-                                            })
-                if resp.status >= 400:
+                req = urllib.request.Request(
+                    self.webhook_url, 
+                    method="POST",
+                    headers={
+                        "Content-Type": "application/json",
+                        "User-Agent": "Bot/1.0", # require custom UA because Discord blocks common urllib/requests/httpx UAs
+                    },
+                    data=json.dumps(data).encode("utf-8"), 
+                )
+                with urllib.request.urlopen(req) as resp:
+                    body = resp.read()
+                    status = resp.status
+                if status >= 400:
                     raise RuntimeError(f"response status: {resp.status} {resp.reason}")
             except Exception as e:
                 self.logger.error(f'failed to send webhook: {e}')
