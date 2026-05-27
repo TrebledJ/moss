@@ -891,7 +891,7 @@ class HttpMossServer(ThreadingHTTPServer):
     correlation_regex: str = _field('', group="matching", flags=["--correlation", "-r"], doc="Extract correlation ID based on regex, this works independently of the filter")
 
     enable_blocking: bool = _field(False, group="security", flags=["--block-scanners"], doc="Enables automatic blocking of IPs which behave like scanners. To unblock, restart the server lol")
-    optimise_read_buffer_for: str = _field("security", flags=["--optimise-mode"], choices=["performance", "security"], group="security", doc="By default ('performance' option), calling .read() on a Python socket file object will block until ALL bytes are read. This exposes the server to potential RUDY attacks, which keeps connections open by trickling one byte at a time. Using the 'security' option mitigates this, but with lower performance (either from a larger memory footprint or from a longer time parsing requests). See Note [read buffers].")
+    optimise_read_buffer_for: str = _field("security", flags=["--optimise-mode"], choices=["performance", "security"], group="security", doc="In 'performance' mode, calling .read() on a Python socket file object will block until ALL bytes are read. This exposes the server to potential RUDY attacks, which keeps connections open by trickling one byte at a time. Using the 'security' option mitigates this, but with lower performance (either from a larger memory footprint or from a longer time parsing requests). You shouldn't really need to specify this unless you're tuning MOSS for high upload throughput. See Note [read buffers].")
 
     def __post_init__(self):
         self._validate()

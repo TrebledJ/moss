@@ -331,11 +331,11 @@ class DebuggerMixin:
         self._browser_js = self._browser_js.replace("{DEBUGGER_PATH}", self.debugger_path)
 
         if not HAS_PT:
-            self.warning(f"debugger works best with the prompt_toolkit package:")
-            self.warning(f"")
-            self.warning(f"\tpip install prompt_toolkit")
-            self.warning(f"")
-            self.warning(f"This is an OPTIONAL dependency which makes the TUI feel smoother.")
+            self.warning(f"[debugger] debugger works best with the prompt_toolkit package:")
+            self.warning(f"[debugger] ")
+            self.warning(f"[debugger] \tpip install prompt_toolkit")
+            self.warning(f"[debugger] ")
+            self.warning(f"[debugger] This is an OPTIONAL dependency which makes the TUI feel smoother.")
 
         # Encryption setup
         if self.debugger_key:
