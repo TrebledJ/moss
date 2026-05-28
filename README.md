@@ -652,6 +652,8 @@ When the agent polls the server, the server responds with pending payloads. The 
  ✓ [2026-05-23 07:42:00] (document.cookie) (browser1) sessionid=abc123
 ```
 
+More details can be found in [docs/ext/DEBUGGER.md](docs/ext/DEBUGGER.md).
+
 ## HTTPS Support
 
 When `--https` is specified, HTTPS will be enabled on the same port. This means the same port provided by `-p` will support HTTP _and_ HTTPS. This polyglot support primarily exists for convenience. You only need to remember one port. Of course, if you want separate ports, you are free to spin up the servers to your liking. And if you want to force HTTPS, you can use `--https-only`.
