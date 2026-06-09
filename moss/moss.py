@@ -195,7 +195,7 @@ class TimeoutBufferedReader:
         """Return all bytes in the current 'session'."""
         try:
             peeky = self.rfile.peek(1)
-        except OSError, TimeoutError:
+        except (OSError, TimeoutError):
             # socket timed out, skip reading the fileobj buffer. 
             peeky = b""
         return bytes(self._history + self._buffer) + peeky
