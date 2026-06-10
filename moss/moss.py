@@ -607,7 +607,7 @@ class MossRequestHandler(BaseHTTPRequestHandler):
                 # An error code has been sent, just exit
                 self.close_connection = True
                 return
-            self.rfile.set_countdown(TIMEOUT_FOR_BODY)
+            self.rfile.set_countdown(self.server.timeout_for_body)
             try:
                 content_length = int(self.headers.get('Content-Length', 0))
                 if content_length <= 0: raise ValueError(f"expected positive content length")
@@ -892,6 +892,8 @@ class HttpMossServer(ThreadingHTTPServer):
 
     enable_blocking: bool = _field(False, group="security", flags=["--block-scanners"], doc="Enables automatic blocking of IPs which behave like scanners. To unblock, restart the server lol")
     optimise_read_buffer_for: str = _field("security", flags=["--optimise-mode"], choices=["performance", "security"], group="security", doc="In 'performance' mode, calling .read() on a Python socket file object will block until ALL bytes are read. This exposes the server to potential RUDY attacks, which keeps connections open by trickling one byte at a time. Using the 'security' option mitigates this, but with lower performance (either from a larger memory footprint or from a longer time parsing requests). You shouldn't really need to specify this unless you're tuning MOSS for high upload throughput. See Note [read buffers].")
+
+    timeout_for_body: int = _field(TIMEOUT_FOR_BODY. group="security", flags=["--timeout"], doc="Timeout for transferring the body")
 
     def __post_init__(self):
         self._validate()
@@ -1226,12 +1228,13 @@ class LoggingEventHandler:
             printe(f"{CLR_GRN}tags: {c}{CLR_RST}")
         if details:
             printe(f"{CLR_YLW}{escape_non_printable(shorten(details))}{CLR_RST}")
-        if requestline := kwargs.get('requestline', None):
-            printe(f"{CLR_YLW}{escape_non_printable(shorten(requestline))}{CLR_RST}")
-        if headers := kwargs.get('headers', None):
-            printe(f"{CLR_YLW}{escape_non_printable(str(headers).strip())}{CLR_RST}")
-        if body := kwargs.get('body', None):
-            printe(f"{CLR_YLW}{escape_non_printable(shorten(body))}{CLR_RST}")
+        else:
+            if requestline := kwargs.get('requestline', None):
+                printe(f"{CLR_YLW}{escape_non_printable(shorten(requestline))}{CLR_RST}")
+            if headers := kwargs.get('headers', None):
+                printe(f"{CLR_YLW}{escape_non_printable(str(headers).strip())}{CLR_RST}")
+            if body := kwargs.get('body', None):
+                printe(f"{CLR_YLW}{escape_non_printable(shorten(body))}{CLR_RST}")
 
         bot_status = kwargs.get('proto', status)
         printe(f"{CLR_YLW}{bot_status:-<30}-{event_timestamp}{CLR_RST}\n")
