@@ -25,7 +25,7 @@ from copy import deepcopy
 import gzip
 import math
 
-__version__ = '0.8.2'
+__version__ = '0.8.3'
 
 MAX_LENGTH_TO_LOG = 1024
 
@@ -893,7 +893,7 @@ class HttpMossServer(ThreadingHTTPServer):
     enable_blocking: bool = _field(False, group="security", flags=["--block-scanners"], doc="Enables automatic blocking of IPs which behave like scanners. To unblock, restart the server lol")
     optimise_read_buffer_for: str = _field("security", flags=["--optimise-mode"], choices=["performance", "security"], group="security", doc="In 'performance' mode, calling .read() on a Python socket file object will block until ALL bytes are read. This exposes the server to potential RUDY attacks, which keeps connections open by trickling one byte at a time. Using the 'security' option mitigates this, but with lower performance (either from a larger memory footprint or from a longer time parsing requests). You shouldn't really need to specify this unless you're tuning MOSS for high upload throughput. See Note [read buffers].")
 
-    timeout_for_body: int = _field(TIMEOUT_FOR_BODY. group="security", flags=["--timeout"], doc="Timeout for transferring the body")
+    timeout_for_body: int = _field(TIMEOUT_FOR_BODY, group="security", flags=["--timeout"], doc="Timeout for transferring the body")
 
     def __post_init__(self):
         self._validate()
